@@ -1,0 +1,32 @@
+[project]
+name = "face-window-tracker"
+version = "0.1.0"
+description = "Local face and eye-position tracking service for head-coupled 3D rendering"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "fastapi>=0.115,<1",
+    "mediapipe>=0.10.20,<1",
+    "numpy>=2.0,<3",
+    "opencv-contrib-python>=4.10,<6",
+    "uvicorn[standard]>=0.34,<1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3,<10",
+]
+
+[project.scripts]
+face-tracker = "face_tracker.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/face_tracker"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
