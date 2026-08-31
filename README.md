@@ -9,7 +9,20 @@
 - Python 人脸位置服务：读取摄像头，检测人脸和双眼，输出经过平滑的位置数据。
 - Three.js 展示箱：订阅位置数据，使用离轴投影渲染固定在屏幕后方的三维场景。
 
-## 现在的技术方案
+## 架构
+
+项目没有把摄像头、视觉模型和三维渲染塞进同一个进程。运行时由两个独立进程组成：Python 服务独占摄像头并持续发布位置，浏览器只负责订阅数据和渲染。两边通过版本化 JSON 协议连接，后续替换视觉模型或渲染引擎时不必一起重写。
+
+| 层 | 位置 | 主要职责 |
+|---|---|---|
+| 采集层 | `service.py` | 管理摄像头、读取画面、处理断流和自动重连 |
+| 视觉层 | `tracker.py` | 运行 BlazeFace，提取人脸框和双眼关键点 |
+| 几何层 | `geometry.py` | 根据相机模型把二维眼位换算为三维观看位置 |
+| 稳定层 | `filtering.py` | 使用 One Euro Filter 降低位置抖动 |
+| 接口层 | `api.py` | 通过 REST 暴露状态，通过 WebSocket 推送实时结果 |
+| 展示层 | `display-case.tsx` | 校准中心、映射坐标、计算离轴投影并渲染场景 |
+
+### 数据流
 
 数据从摄像头到画面的路径如下：
 
@@ -239,8 +252,10 @@ FACE_CAMERA_SOURCE=/absolute/path/to/video.mp4 uv run face-tracker serve
 ├── models/              # 首次运行后下载的模型
 └── web/
     ├── app/             # 页面入口与全局样式
-    └── components/
-        └── display-case.tsx  # 展示箱、WebSocket 和离轴投影
+    ├── components/
+    │   ├── display-case.tsx  # 展示箱、WebSocket 和离轴投影
+    │   └── ui/button.tsx     # 页面使用的按钮组件
+    └── public/          # 网站静态资源
 ```
 
 Python 与 Three.js 之间只通过版本化 JSON 通信。以后如果换成 Unity、Unreal 或原生 OpenGL，后端不需要跟着重写；同样，替换检测算法时也可以保持 `v1` 协议不变。
@@ -279,6 +294,8 @@ npm run build
 ```
 
 `npm run build` 需要 Node.js 22.13 或更高版本。
+
+GitHub 上的每次 `main` 推送和 Pull Request 都会运行同样的后端测试、前端检查与生产构建，配置位于 `.github/workflows/ci.yml`。
 
 ## 后续工作
 
