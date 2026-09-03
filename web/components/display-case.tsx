@@ -592,7 +592,7 @@ function SettingsPanel({ settings, update, reset, onClose }: {
 export function DisplayCase() {
   const mountRef = useRef<HTMLDivElement>(null);
   const settingsRef = useRef<DisplaySettings>(cloneSettings());
-  const targetRef = useRef<ViewPosition>({ x: 0, y: 0, z: baselineDepth(settingsRef.current) });
+  const targetRef = useRef<ViewPosition>({ x: 0, y: 0, z: baselineDepth(DEFAULT_SETTINGS) });
   const resetRef = useRef<() => void>(() => {});
   const draggingRef = useRef(false);
   const faceEnabledRef = useRef(true);
