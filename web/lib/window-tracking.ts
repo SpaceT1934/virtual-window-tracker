@@ -89,10 +89,15 @@ export function physicalView(position: Position, neutral: Position, windowWidth:
                              visibleWidthM: number, neutralDistanceM: number, invertX: boolean): Position {
   // Physical width refers to the visible rendered rectangle, NOT the monitor diagonal.
   const unitsPerM = windowWidth / visibleWidthM;
-  const metricScale = neutralDistanceM / neutral.z;
+  // The neutral sample is the measured eye-to-screen distance.  Map movement
+  // as an affine displacement around that point; scaling the absolute z value
+  // by neutralDistance/neutral.z silently distorts x/y and makes a metric
+  // tracker disagree with the rear box when its camera is offset from the
+  // screen.  This keeps the neutral eye exactly at (0, 0, D) and preserves a
+  // single metres-to-world-units scale on all three axes.
   return {
-    x: (position.x - neutral.x) * metricScale * unitsPerM * (invertX ? -1 : 1),
-    y: (position.y - neutral.y) * metricScale * unitsPerM,
-    z: position.z * metricScale * unitsPerM,
+    x: (position.x - neutral.x) * unitsPerM * (invertX ? -1 : 1),
+    y: (position.y - neutral.y) * unitsPerM,
+    z: (neutralDistanceM + position.z - neutral.z) * unitsPerM,
   };
 }

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { PerspectiveCamera, Vector3, Matrix4 } from 'three';
+import { PerspectiveCamera, Vector3, Matrix4, Euler } from 'three';
 import { applyWindowProjection } from '../lib/window-projection.ts';
 import { TrackingSession, physicalView } from '../lib/window-tracking.ts';
 import { RenderBudget, renderPixelRatio } from '../lib/render-budget.ts';
@@ -29,6 +29,46 @@ test('all four screen corners stay anchored, including near-plane clamping', () 
       identity.elements.forEach((v, i) => assert.ok(Math.abs(v - (i % 5 === 0 ? 1 : 0)) < 1e-9));
     }
   }
+});
+test('generalized projection keeps a rotated physical screen and eye basis aligned', () => {
+  const width = 8;
+  const height = 4.5;
+  const rotation = new Matrix4().makeRotationFromEuler(new Euler(.17, -.23, .11));
+  const translation = new Vector3(1.1, -.7, .35);
+  const transform = (x, y, z = 0) => new Vector3(x, y, z).applyMatrix4(rotation).add(translation);
+  const screen = {
+    bottomLeft: transform(-width / 2, -height / 2),
+    bottomRight: transform(width / 2, -height / 2),
+    topLeft: transform(-width / 2, height / 2),
+  };
+  const right = new Vector3().subVectors(screen.bottomRight, screen.bottomLeft).normalize();
+  const up = new Vector3().subVectors(screen.topLeft, screen.bottomLeft).normalize();
+  const normal = new Vector3().crossVectors(right, up);
+  const center = transform(0, 0);
+  const eye = center.clone().addScaledVector(normal, 7.4);
+  const camera = new PerspectiveCamera();
+  applyWindowProjection(camera, eye, width, height, .1, 50, screen);
+  const corners = [
+    screen.bottomLeft,
+    screen.bottomRight,
+    transform(width / 2, height / 2),
+    screen.topLeft,
+  ];
+  const expected = [[-1, -1], [1, -1], [1, 1], [-1, 1]];
+  corners.forEach((corner, index) => {
+    const projected = corner.clone().project(camera);
+    assert.ok(Math.abs(projected.x - expected[index][0]) < 1e-9);
+    assert.ok(Math.abs(projected.y - expected[index][1]) < 1e-9);
+  });
+  const direction = camera.getWorldDirection(new Vector3());
+  assert.ok(direction.distanceTo(normal.clone().negate()) < 1e-9);
+});
+test('sheared screen bases are rejected instead of producing a twisted frustum', () => {
+  assert.throws(() => applyWindowProjection(new PerspectiveCamera(), { x: 0, y: 0, z: 7 }, 8, 4.5, .1, 50, {
+    bottomLeft: { x: -4, y: -2.25, z: 0 },
+    bottomRight: { x: 4, y: -2.25, z: 0 },
+    topLeft: { x: -3.8, y: 2.25, z: 0 },
+  }), /perpendicular/);
 });
 test('invalid frusta rejected', () => {
   assert.throws(() => applyWindowProjection(new PerspectiveCamera(), { x: NaN, y: 0, z: 1 }, 8, 4.5, 0.1, 50));
@@ -77,9 +117,20 @@ test('new identity and reconnection require a new calibration', () => {
 });
 test('physical mapping uses one metric scale across all three axes', () => {
   const p = physicalView({ x: 0.05, y: 0.05, z: 0.55 }, { x: 0, y: 0, z: 0.5 }, 8, 0.5, 0.6, false);
-  assert.ok(Math.abs(p.x - 0.96) < 1e-9);
-  assert.ok(Math.abs(p.y - 0.96) < 1e-9);
-  assert.ok(Math.abs(p.z - 10.56) < 1e-9);
+  assert.ok(Math.abs(p.x - 0.8) < 1e-9);
+  assert.ok(Math.abs(p.y - 0.8) < 1e-9);
+  assert.ok(Math.abs(p.z - 10.4) < 1e-9);
+});
+test('physical mapping anchors neutral depth and preserves metric deltas', () => {
+  const neutral = { x: .11, y: -.08, z: .73 };
+  const p = physicalView(neutral, neutral, 8, .5, .6, true);
+  assert.ok(Math.abs(p.x) < 1e-12);
+  assert.ok(Math.abs(p.y) < 1e-12);
+  assert.ok(Math.abs(p.z - 9.6) < 1e-12);
+  const moved = physicalView({ x: .21, y: -.03, z: .83 }, neutral, 8, .5, .6, true);
+  assert.ok(Math.abs(moved.x + 1.6) < 1e-12);
+  assert.ok(Math.abs(moved.y - .8) < 1e-12);
+  assert.ok(Math.abs(moved.z - 11.2) < 1e-12);
 });
 
 test('side-on face cannot set neutral but can be tracked after calibration', () => {

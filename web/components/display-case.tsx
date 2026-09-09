@@ -73,6 +73,7 @@ type DisplaySettings = {
     x: number;
     y: number;
     z: number;
+    depthM: number;
     scale: number;
     bronzeColor: string;
     darkBronzeColor: string;
@@ -164,6 +165,7 @@ const DEFAULT_SETTINGS: DisplaySettings = {
     x: 0,
     y: -0.18,
     z: -1.85,
+    depthM: 0.12,
     scale: 1.08,
     bronzeColor: '#9e6738',
     darkBronzeColor: '#30241e',
@@ -228,6 +230,11 @@ const baselineDepth = (settings: DisplaySettings) =>
   settings.view.physicalMode
     ? settings.view.neutralDistanceM * settings.case.width / settings.view.visibleWidthM
     : clamp(settings.view.eyeDistance, settings.view.zMinimum, settings.view.zMaximum);
+
+/** Convert the model's depth to the same world units used by the screen plane. */
+const modelWorldZ = (settings: DisplaySettings) => settings.view.physicalMode
+  ? -settings.model.depthM * settings.case.width / settings.view.visibleWidthM
+  : settings.model.z;
 
 function makeGrid(width: number, height: number, columns: number, rows: number, color: string, opacity: number) {
   const vertices: number[] = [];
@@ -398,7 +405,7 @@ function applySceneSettings(handles: SceneHandles, settings: DisplaySettings) {
   fog.near = settings.case.fogNear;
   fog.far = settings.case.fogFar;
 
-  artifact.position.set(settings.model.x, settings.model.y, settings.model.z);
+  artifact.position.set(settings.model.x, settings.model.y, modelWorldZ(settings));
   artifact.scale.setScalar(settings.model.scale);
   const { bronze, darkBronze, plinthTopMaterial, plinthMaterial } = artifact.userData.materials as {
     bronze: THREE.MeshStandardMaterial;
@@ -568,10 +575,12 @@ function SettingsPanel({ settings, update, reset, onClose }: {
         <Section title="模型">
           <label className="settings-toggle"><span>高斯坐标翻转（绕 X 轴 180°）</span><input type="checkbox" checked={settings.model.gaussianFlipY} onChange={(event) => update((d) => { d.model.gaussianFlipY = event.target.checked; })} /></label>
           <p className="settings-hint">扫描模型若上下颠倒可开启；高斯颜色包含拍摄时光照。</p>
-          <p className="settings-hint"><strong>屏幕平面 Z：</strong>负值在屏幕内，0 在屏幕平面，正值在屏幕外。</p>
+          <p className="settings-hint">世界坐标中屏幕平面固定为 <strong>z = 0</strong>；屏幕后方为负，朝向观看者为正。观察点 z 是眼睛到屏幕的距离，不是模型 z。</p>
           {number('模型 X', settings.model.x, (value) => update((d) => { d.model.x = value; }), -8, 8, 0.01)}
           {number('模型 Y', settings.model.y, (value) => update((d) => { d.model.y = value; }), -6, 6, 0.01)}
-          {number('屏幕平面 Z', settings.model.z, (value) => update((d) => { d.model.z = value; }), -12, 4.8, 0.01)}
+          {settings.view.physicalMode
+            ? number('屏幕后深度', settings.model.depthM, (value) => update((d) => { d.model.depthM = value; }), 0.01, 1.5, 0.01, ' m')
+            : number('模型 Z（场景单位）', settings.model.z, (value) => update((d) => { d.model.z = value; }), -12, 4.8, 0.01)}
           {number('统一缩放', settings.model.scale, (value) => update((d) => { d.model.scale = value; }), 0.1, 4, 0.01)}
           {number('金属度', settings.model.metalness, (value) => update((d) => { d.model.metalness = value; }), 0, 1, 0.01)}
           {number('粗糙度', settings.model.roughness, (value) => update((d) => { d.model.roughness = value; }), 0, 1, 0.01)}
@@ -1015,7 +1024,10 @@ export function DisplayCase() {
   const statusColor = trackerState === 'tracking' ? 'bg-[#71c8a2]' : trackerState === 'offline' ? 'bg-[#e36f63]' : trackerState === 'lost' ? 'bg-[#e8a45e]' : 'bg-[#7fb3c8]';
   return (
     <section className="max-w-none" style={{ width: `min(100vw, ${100 * settings.case.width / settings.case.height}vh)` }}>
-      <div className="case-shell relative overflow-hidden bg-[#101415] shadow-[0_42px_100px_rgba(0,0,0,0.55)]">
+      <div
+        className="case-shell relative overflow-hidden bg-[#101415] shadow-[0_42px_100px_rgba(0,0,0,0.55)]"
+        style={{ '--case-aspect': settings.case.width / settings.case.height } as React.CSSProperties}
+      >
         <div data-case-viewport style={{ aspectRatio: `${settings.case.width} / ${settings.case.height}` }} className="relative w-full cursor-crosshair overflow-hidden bg-[#171b1c]" onPointerDown={startView} onPointerMove={moveView} onPointerUp={endView} onPointerCancel={endView}>
           <div ref={mountRef} className="absolute inset-0" aria-label="三维虚拟展示箱" />
           <div className="screen-frame pointer-events-none absolute inset-0 z-30" aria-hidden="true" />

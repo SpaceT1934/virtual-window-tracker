@@ -144,8 +144,19 @@ body {
   border: clamp(6px, 0.7vw, 12px) solid #101516;
   box-shadow: inset 0 0 0 1px rgb(255 255 255 / 10%), inset 0 0 26px rgb(0 0 0 / 48%);
 }
-.case-shell:fullscreen { width: 100vw; height: 100vh; max-width: none; background: #101415; }
-.case-shell:fullscreen > [data-case-viewport] { width: 100%; height: 100%; aspect-ratio: auto; }
+.case-shell:fullscreen {
+  width: 100vw;
+  height: 100vh;
+  max-width: none;
+  display: grid;
+  place-items: center;
+  background: #101415;
+}
+.case-shell:fullscreen > [data-case-viewport] {
+  width: min(100%, calc(100vh * var(--case-aspect)));
+  height: min(100%, calc(100vw / var(--case-aspect)));
+  aspect-ratio: auto;
+}
 canvas { display: block; }
 
 .settings-panel {
