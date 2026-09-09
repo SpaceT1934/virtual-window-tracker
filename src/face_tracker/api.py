@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from .config import Settings
@@ -38,6 +39,29 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/api/v1/status")
     def status() -> dict:
         return tracking_service.status()
+
+    async def _mjpeg_frames() -> AsyncIterator[bytes]:
+        boundary = b"frame"
+        last_sent: bytes | None = None
+        while True:
+            jpeg = tracking_service.latest_jpeg()
+            if jpeg is not None and jpeg is not last_sent:
+                last_sent = jpeg
+                yield (
+                    b"--" + boundary + b"\r\n"
+                    b"Content-Type: image/jpeg\r\n"
+                    b"Content-Length: " + str(len(jpeg)).encode() + b"\r\n\r\n"
+                    + jpeg
+                    + b"\r\n"
+                )
+            await asyncio.sleep(1 / 30)
+
+    @app.get("/api/v1/debug/stream")
+    def debug_stream() -> StreamingResponse:
+        return StreamingResponse(
+            _mjpeg_frames(),
+            media_type="multipart/x-mixed-replace; boundary=frame",
+        )
 
     @app.get("/api/v1/tracking/latest")
     def latest() -> dict:
