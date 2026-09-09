@@ -96,6 +96,20 @@ macOS 第一次启动摄像头时，需要允许终端或 Codex 使用摄像头�
 
 ## 启动项目
 
+### Windows 一键启动（依赖已安装）
+
+使用名为 `virtual-window-tracker` 的 Conda 环境（Python 3.12），并安装好后端依赖和 `web/node_modules` 后，双击根目录的 `start.cmd`，或在 PowerShell 中运行：
+
+```powershell
+.\start.cmd
+```
+
+脚本会自动使用 Conda 环境、启动后端与网页，并打开 <http://127.0.0.1:3000/>。默认请求 640 × 480 摄像头画面，并启用前端文件轮询监听。已有的 `FACE_*` 环境变量会保留。
+
+在启动窗口按 Enter 或 Ctrl+C 会停止两个服务。端口被占用时脚本会提示，不会终止已有进程。使用 `.\start.cmd --no-browser` 可跳过自动打开浏览器。
+
+### 手动安装与启动
+
 先安装 Python 依赖：
 
 ```bash
