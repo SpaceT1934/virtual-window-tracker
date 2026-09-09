@@ -88,6 +88,13 @@ def test_face_yields_position_with_yunet_keypoints(tracker):
     # debug points include both eyes and nose.
     names = {p["name"] for p in face["debug_points"]}
     assert {"left_eye", "right_eye", "nose"} <= names
+    # All five YuNet keypoints are exposed with a group marker.
+    assert {"right_eye", "left_eye", "nose", "right_mouth", "left_mouth"} == names
+    assert all(p["group"] == "yunet" for p in face["debug_points"])
+    assert len(face["debug_points"]) == 5
+    # Nose is at its keypoint position in normalized coords.
+    nose = next(p for p in face["debug_points"] if p["name"] == "nose")
+    assert nose["x"] == round(320 / 640, 6)
 
 
 def test_detection_resizes_input_bbox(tracker):

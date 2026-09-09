@@ -99,9 +99,9 @@ class YuNetPositionTracker:
     def __exit__(self, *_: object) -> None:
         self.close()
 
-    def _load_facemark_eyes(self, frame_bgr: np.ndarray, box: np.ndarray) -> tuple[Point2, Point2] | None:
-        """Return (right_eye, left_eye) from Facemark LBF if it is available and
-        the fit succeeds, else None so the caller falls back to YuNet points."""
+    def _load_facemark_landmarks(self, frame_bgr: np.ndarray, box: np.ndarray) -> np.ndarray | None:
+        """Return the full 68-point Landmarks (N, 2) from Facemark LBF, or None
+        when the facemark is unavailable or the fit fails."""
         if self._facemark is None:
             return None
         bbox = np.array([[int(box[0]), int(box[1]), int(box[2]), int(box[3])]], dtype=np.int32)
@@ -109,11 +109,20 @@ class YuNetPositionTracker:
         if not ok or not landmarks or len(landmarks[0]) < 68:
             return None
         # LBF returns shape (1, 68, 1, 2). Flatten to (68, 2).
-        pts = np.asarray(landmarks[0], dtype=np.float64).reshape(-1, 2)
-        # LBF 68-point convention: right_eye = [36..41], left_eye = [42..47].
-        right_eye = Point2(float(pts[36:42, 0].mean()), float(pts[36:42, 1].mean()))
-        left_eye = Point2(float(pts[42:48, 0].mean()), float(pts[42:48, 1].mean()))
-        return right_eye, left_eye
+        return np.asarray(landmarks[0], dtype=np.float64).reshape(-1, 2)
+
+    @staticmethod
+    def _eye_centers_from_landmarks(pts: np.ndarray, right_idx: int = 0, left_idx: int = 1):
+        """Resolve the right/left eye centers from a landmark array.
+
+        When 68 LBF points are present the eyes use the median of the standard
+        LBF eye clusters ([36..41] right, [42..47] left). Otherwise the caller
+        supplies the YuNet eye keypoints directly."""
+        if pts is not None and pts.shape[0] >= 68:
+            right_eye = Point2(float(pts[36:42, 0].mean()), float(pts[36:42, 1].mean()))
+            left_eye = Point2(float(pts[42:48, 0].mean()), float(pts[42:48, 1].mean()))
+            return right_eye, left_eye
+        return None
 
     def process(self, frame_bgr: np.ndarray, timestamp_ms: int) -> dict[str, Any]:
         height, width = frame_bgr.shape[:2]
@@ -143,12 +152,38 @@ class YuNetPositionTracker:
         left_eye_px = Point2(float(current[LEFT_EYE]), float(current[LEFT_EYE + 1]))
 
         # Optional: replace with Facemark LBF eye-centers when available and valid.
-        facemark_eyes = self._load_facemark_eyes(frame_bgr, box)
+        facemark_landmarks = self._load_facemark_landmarks(frame_bgr, box)
+        facemark_eyes = None
+        if facemark_landmarks is not None:
+            facemark_eyes = self._eye_centers_from_landmarks(facemark_landmarks)
         if facemark_eyes is not None:
             right_eye_px, left_eye_px = facemark_eyes
 
         eye_center = average_points([left_eye_px, right_eye_px])
         eye_distance = pixel_distance(left_eye_px, right_eye_px)
+
+        # Expose every detected landmark for debugging. Prefer the full LBF 68
+        # points when available, otherwise the five YuNet keypoints.
+        debug_points: list[dict[str, Any]] = []
+        if facemark_landmarks is not None:
+            for index, (px, py) in enumerate(facemark_landmarks):
+                debug_points.append({
+                    "index": index,
+                    "name": f"lbf_{index}",
+                    "group": "lbf",
+                    "x": round(float(px) / width, 6),
+                    "y": round(float(py) / height, 6),
+                    "pixel": {"x": float(px), "y": float(py)},
+                })
+        else:
+            for name, offset in (("right_eye", RIGHT_EYE), ("left_eye", LEFT_EYE), ("nose", NOSE), ("right_mouth", RIGHT_MOUTH), ("left_mouth", LEFT_MOUTH)):
+                debug_points.append({
+                    "name": name,
+                    "group": "yunet",
+                    "x": round(float(current[offset]) / width, 6),
+                    "y": round(float(current[offset + 1]) / height, 6),
+                    "pixel": {"x": float(current[offset]), "y": float(current[offset + 1])},
+                })
 
         intrinsics = CameraIntrinsics.from_horizontal_fov(
             width, height, self.settings.camera_hfov_deg
@@ -213,25 +248,6 @@ class YuNetPositionTracker:
                     "valid_points": 2,
                     "eye_source": "facemark-lbf" if facemark_eyes is not None else "yunet-keypoints",
                 },
-                "debug_points": [
-                    {
-                        "name": "left_eye",
-                        "x": round(left_eye_px.x / width, 6),
-                        "y": round(left_eye_px.y / height, 6),
-                        "pixel": {"x": left_eye_px.x, "y": left_eye_px.y},
-                    },
-                    {
-                        "name": "right_eye",
-                        "x": round(right_eye_px.x / width, 6),
-                        "y": round(right_eye_px.y / height, 6),
-                        "pixel": {"x": right_eye_px.x, "y": right_eye_px.y},
-                    },
-                    {
-                        "name": "nose",
-                        "x": round(current[NOSE] / width, 6),
-                        "y": round(current[NOSE + 1] / height, 6),
-                        "pixel": {"x": current[NOSE], "y": current[NOSE + 1]},
-                    },
-                ],
+                "debug_points": debug_points,
             },
         }
