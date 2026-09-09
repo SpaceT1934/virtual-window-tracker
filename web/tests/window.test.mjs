@@ -1,8 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { PerspectiveCamera, Vector3, Matrix4 } from 'three';
+import { PerspectiveCamera, Vector3, Matrix4, Euler } from 'three';
 import { applyWindowProjection } from '../lib/window-projection.ts';
 import { TrackingSession, physicalView } from '../lib/window-tracking.ts';
+import { windowPlaneFromAnchor } from '../lib/window-anchor.ts';
 import { RenderBudget, renderPixelRatio } from '../lib/render-budget.ts';
 
 const packet = (sequence, position = { x: 0, y: 0, z: 0.6 }, track_id = 1) => ({
@@ -29,6 +30,54 @@ test('all four screen corners stay anchored, including near-plane clamping', () 
       identity.elements.forEach((v, i) => assert.ok(Math.abs(v - (i % 5 === 0 ? 1 : 0)) < 1e-9));
     }
   }
+});
+test('generalized projection keeps a rotated physical screen and eye basis aligned', () => {
+  const width = 8;
+  const height = 4.5;
+  const rotation = new Matrix4().makeRotationFromEuler(new Euler(.17, -.23, .11));
+  const translation = new Vector3(1.1, -.7, .35);
+  const transform = (x, y, z = 0) => new Vector3(x, y, z).applyMatrix4(rotation).add(translation);
+  const screen = {
+    bottomLeft: transform(-width / 2, -height / 2),
+    bottomRight: transform(width / 2, -height / 2),
+    topLeft: transform(-width / 2, height / 2),
+  };
+  const right = new Vector3().subVectors(screen.bottomRight, screen.bottomLeft).normalize();
+  const up = new Vector3().subVectors(screen.topLeft, screen.bottomLeft).normalize();
+  const normal = new Vector3().crossVectors(right, up);
+  const center = transform(0, 0);
+  const eye = center.clone().addScaledVector(normal, 7.4);
+  const camera = new PerspectiveCamera();
+  applyWindowProjection(camera, eye, width, height, .1, 50, screen);
+  const corners = [
+    screen.bottomLeft,
+    screen.bottomRight,
+    transform(width / 2, height / 2),
+    screen.topLeft,
+  ];
+  const expected = [[-1, -1], [1, -1], [1, 1], [-1, 1]];
+  corners.forEach((corner, index) => {
+    const projected = corner.clone().project(camera);
+    assert.ok(Math.abs(projected.x - expected[index][0]) < 1e-9);
+    assert.ok(Math.abs(projected.y - expected[index][1]) < 1e-9);
+  });
+  const direction = camera.getWorldDirection(new Vector3());
+  assert.ok(direction.distanceTo(normal.clone().negate()) < 1e-9);
+});
+test('sheared screen bases are rejected instead of producing a twisted frustum', () => {
+  assert.throws(() => applyWindowProjection(new PerspectiveCamera(), { x: 0, y: 0, z: 7 }, 8, 4.5, .1, 50, {
+    bottomLeft: { x: -4, y: -2.25, z: 0 },
+    bottomRight: { x: 4, y: -2.25, z: 0 },
+    topLeft: { x: -3.8, y: 2.25, z: 0 },
+  }), /perpendicular/);
+});
+test('window anchors produce a physical rectangle for scene content', () => {
+  const plane = windowPlaneFromAnchor({
+    center: new Vector3(2, 3, -4), right: new Vector3(1, 0, 0), up: new Vector3(0, 1, 0), width: 8, height: 4,
+  });
+  assert.deepEqual(plane.bottomLeft.toArray(), [-2, 1, -4]);
+  assert.deepEqual(plane.bottomRight.toArray(), [6, 1, -4]);
+  assert.deepEqual(plane.topLeft.toArray(), [-2, 5, -4]);
 });
 test('invalid frusta rejected', () => {
   assert.throws(() => applyWindowProjection(new PerspectiveCamera(), { x: NaN, y: 0, z: 1 }, 8, 4.5, 0.1, 50));
@@ -80,6 +129,25 @@ test('physical mapping uses one metric scale across all three axes', () => {
   assert.ok(Math.abs(p.x - 0.96) < 1e-9);
   assert.ok(Math.abs(p.y - 0.96) < 1e-9);
   assert.ok(Math.abs(p.z - 10.56) < 1e-9);
+});
+test('physical mapping calibrates absolute camera geometry to neutral depth', () => {
+  const neutral = { x: 0, y: 0, z: .5 };
+  const p = physicalView(neutral, neutral, 8, .5, .6, true);
+  assert.ok(Math.abs(p.x) < 1e-12);
+  assert.ok(Math.abs(p.y) < 1e-12);
+  assert.ok(Math.abs(p.z - 9.6) < 1e-12);
+  const moved = physicalView({ x: .1, y: .05, z: .6 }, neutral, 8, .5, .6, true);
+  assert.ok(Math.abs(moved.x + 1.92) < 1e-12);
+  assert.ok(Math.abs(moved.y - .96) < 1e-12);
+  assert.ok(Math.abs(moved.z - 11.52) < 1e-12);
+});
+test('physical mapping keeps an overshooting eye in front of the window', () => {
+  const p = physicalView({ x: 0, y: 0, z: 0.01 }, { x: 0, y: 0, z: 0.6 }, 8, .5, .6, false, .05);
+  assert.ok(Math.abs(p.z - .8) < 1e-12);
+});
+test('physical mapping applies a parallel camera offset without changing scale', () => {
+  const p = physicalView({ x: 0, y: 0, z: .6 }, { x: 0, y: 0, z: .6 }, 8, .5, .6, false, .03, { x: .02, y: -.01, z: .04 });
+  assert.deepEqual(p, { x: .32, y: -.16, z: 9.6 });
 });
 
 test('side-on face cannot set neutral but can be tracked after calibration', () => {

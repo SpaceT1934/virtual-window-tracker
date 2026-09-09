@@ -32,26 +32,22 @@ type TrackingPacket = {
 type DisplaySettings = {
   connectionUrl: string;
   view: {
-    physicalMode: boolean;
     visibleWidthM: number;
     neutralDistanceM: number;
-    eyeDistance: number;
+    minimumEyeDistanceM: number;
+    cameraOffsetX: number;
+    cameraOffsetY: number;
+    cameraOffsetZ: number;
     near: number;
     far: number;
-    positionGain: number;
-    depthGain: number;
     invertX: boolean;
-    xLimit: number;
-    yLimit: number;
-    zMinimum: number;
-    zMaximum: number;
-    mouseXGain: number;
-    mouseYGain: number;
+    mouseDragEnabled: boolean;
     smoothing: number;
     lostResetMs: number;
     reconnectMs: number;
   };
   case: {
+    visible: boolean;
     width: number;
     height: number;
     depth: number;
@@ -64,15 +60,15 @@ type DisplaySettings = {
     roughness: number;
     metalness: number;
     backgroundColor: string;
-    fogColor: string;
-    fogNear: number;
-    fogFar: number;
+    skyColor: string;
   };
   model: {
-    gaussianFlipY: boolean;
     x: number;
     y: number;
-    z: number;
+    rotationX: number;
+    rotationY: number;
+    rotationZ: number;
+    depthM: number;
     scale: number;
     bronzeColor: string;
     darkBronzeColor: string;
@@ -84,8 +80,6 @@ type DisplaySettings = {
   lighting: {
     autoResolution: boolean;
     maxRenderMegapixels: number;
-    gaussianBlur: number;
-    gaussianSigma: number;
     pixelRatioCap: number;
     exposure: number;
     hemisphereSky: string;
@@ -123,26 +117,22 @@ type DisplaySettings = {
 const DEFAULT_SETTINGS: DisplaySettings = {
   connectionUrl: 'ws://127.0.0.1:8765/ws/v1/tracking',
   view: {
-    physicalMode: false,
-    visibleWidthM: 0.53,
+    visibleWidthM: 0.30,
     neutralDistanceM: 0.6,
-    eyeDistance: 7.4,
+    minimumEyeDistanceM: 0.03,
+    cameraOffsetX: 0,
+    cameraOffsetY: 0,
+    cameraOffsetZ: 0,
     near: 0.1,
-    far: 50,
-    positionGain: 12.5,
-    depthGain: 10,
+    far: 200,
     invertX: true,
-    xLimit: 2.2,
-    yLimit: 1.35,
-    zMinimum: 5.2,
-    zMaximum: 10.5,
-    mouseXGain: 0.82,
-    mouseYGain: 0.48,
+    mouseDragEnabled: true,
     smoothing: 28,
     lostResetMs: 700,
     reconnectMs: 1500,
   },
   case: {
+    visible: true,
     width: 8,
     height: 4.5,
     depth: 5.8,
@@ -155,15 +145,15 @@ const DEFAULT_SETTINGS: DisplaySettings = {
     roughness: 0.86,
     metalness: 0.02,
     backgroundColor: '#171b1c',
-    fogColor: '#171b1c',
-    fogNear: 15,
-    fogFar: 28,
+    skyColor: '#4d6870',
   },
   model: {
-    gaussianFlipY: false,
     x: 0,
     y: -0.18,
-    z: -1.85,
+    rotationX: 0,
+    rotationY: 0,
+    rotationZ: 0,
+    depthM: -0.12,
     scale: 1.08,
     bronzeColor: '#9e6738',
     darkBronzeColor: '#30241e',
@@ -175,8 +165,6 @@ const DEFAULT_SETTINGS: DisplaySettings = {
   lighting: {
     autoResolution: false,
     maxRenderMegapixels: 8.3,
-    gaussianBlur: 0.3,
-    gaussianSigma: Math.sqrt(8),
     pixelRatioCap: 2,
     exposure: 1.08,
     hemisphereSky: '#e8f1f0',
@@ -224,10 +212,32 @@ const clamp = (value: number, minimum: number, maximum: number) =>
   Math.min(Math.max(value, minimum), maximum);
 
 const cloneSettings = () => structuredClone(DEFAULT_SETTINGS);
+const SETTINGS_STORAGE_KEY = 'virtual-window-tracker.settings.v2';
+function loadStoredSettings(): DisplaySettings {
+  if (typeof window === 'undefined') return cloneSettings();
+  try {
+    const raw = window.localStorage.getItem(SETTINGS_STORAGE_KEY);
+    if (!raw) return cloneSettings();
+    const saved = JSON.parse(raw) as Partial<DisplaySettings>;
+    const defaults = cloneSettings();
+    return {
+      ...defaults,
+      ...saved,
+      view: { ...defaults.view, ...saved.view },
+      case: { ...defaults.case, ...saved.case },
+      model: { ...defaults.model, ...saved.model },
+      lighting: { ...defaults.lighting, ...saved.lighting },
+    };
+  } catch {
+    return cloneSettings();
+  }
+}
 const baselineDepth = (settings: DisplaySettings) =>
-  settings.view.physicalMode
-    ? settings.view.neutralDistanceM * settings.case.width / settings.view.visibleWidthM
-    : clamp(settings.view.eyeDistance, settings.view.zMinimum, settings.view.zMaximum);
+  settings.view.neutralDistanceM * settings.case.width / settings.view.visibleWidthM;
+
+/** Convert the model's depth to the same world units used by the screen plane. */
+const modelWorldZ = (settings: DisplaySettings) =>
+  settings.model.depthM * settings.case.width / settings.view.visibleWidthM;
 
 function makeGrid(width: number, height: number, columns: number, rows: number, color: string, opacity: number) {
   const vertices: number[] = [];
@@ -259,6 +269,7 @@ function disposeObject(object: THREE.Object3D) {
 
 function createDisplayCase(settings: DisplaySettings) {
   const group = new THREE.Group();
+  group.visible = settings.case.visible;
   const { width, height, depth } = settings.case;
   const roomMaterial = new THREE.MeshStandardMaterial({
     color: settings.case.roomColor,
@@ -392,13 +403,10 @@ type SceneHandles = {
 
 function applySceneSettings(handles: SceneHandles, settings: DisplaySettings) {
   const { scene, artifact, hemisphere, key, rim, fill } = handles;
-  scene.background = new THREE.Color(settings.case.backgroundColor);
-  const fog = scene.fog as THREE.Fog;
-  fog.color.set(settings.case.fogColor);
-  fog.near = settings.case.fogNear;
-  fog.far = settings.case.fogFar;
+  scene.background = new THREE.Color(settings.case.visible ? settings.case.backgroundColor : settings.case.skyColor);
+  handles.caseGroup.visible = settings.case.visible;
 
-  artifact.position.set(settings.model.x, settings.model.y, settings.model.z);
+  artifact.position.set(settings.model.x, settings.model.y, modelWorldZ(settings));
   artifact.scale.setScalar(settings.model.scale);
   const { bronze, darkBronze, plinthTopMaterial, plinthMaterial } = artifact.userData.materials as {
     bronze: THREE.MeshStandardMaterial;
@@ -481,8 +489,9 @@ function ColorControl({ label, value, onChange }: { label: string; value: string
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   const [open, setOpen] = useState(title === '模型' || title === '视角与深度');
+  const order = title === '视角与深度' ? 'view' : title === '模型' ? 'model' : title === '跟踪响应' ? 'tracking' : title === '展示箱' ? 'case' : title === '连接' ? 'connection' : 'advanced';
   return (
-    <section className="settings-section">
+    <section className={`settings-section settings-section-${order}`}>
       <button type="button" className="settings-section-heading" onClick={() => setOpen((current) => !current)} aria-expanded={open}>
         {title}
         {open ? <ChevronUp /> : <ChevronDown />}
@@ -519,7 +528,7 @@ function SettingsPanel({ settings, update, reset, onClose }: {
         <div><p>虚拟窗口</p><h2>显示设置</h2></div>
         <Button type="button" size="icon-sm" variant="ghost" aria-label="关闭显示设置" onClick={onClose}><ChevronDown /></Button>
       </header>
-      <p className="settings-intro">所有更改即时生效，仅保留到本次页面会话结束。</p>
+      <p className="settings-intro">更改即时生效，并保存在此浏览器；恢复默认会回到原始参数。</p>
       <div className="settings-scroll">
         <Section title="连接">
           <label className="settings-text-control"><span>跟踪 WebSocket 地址</span><input value={urlDraft} onChange={(event) => setUrlDraft(event.target.value)} spellCheck={false} /></label>
@@ -527,65 +536,53 @@ function SettingsPanel({ settings, update, reset, onClose }: {
           {!validUrl && <p className="settings-error">请输入以 ws:// 或 wss:// 开头的地址。</p>}
         </Section>
         <Section title="视角与深度">
-          <label className="settings-toggle"><span>按实测尺寸投影</span><input type="checkbox" checked={settings.view.physicalMode} onChange={(event) => update((d) => { d.view.physicalMode = event.target.checked; })} /></label>
-          <p className="settings-hint">开启前测量画面区域宽度和眼睛到屏幕的距离（米）；全屏或调整窗口尺寸后请重新校准。</p>
+          <p className="settings-hint">统一使用真实尺寸窗口投影。请测量可见画面宽度和校准时眼睛到屏幕的距离（米）；全屏或调整窗口尺寸后请重新校准。</p>
           {number('画面区域实测宽度', settings.view.visibleWidthM, (value) => update((d) => { d.view.visibleWidthM = value; }), 0.1, 3, 0.01, ' m')}
           {number('校准时眼屏距离', settings.view.neutralDistanceM, (value) => update((d) => { d.view.neutralDistanceM = value; }), 0.2, 2, 0.01, ' m')}
-          {number('默认观察距离', settings.view.eyeDistance, (value) => update((d) => { d.view.eyeDistance = value; }), 1, 20, 0.1)}
+          {number('最小眼屏距离', settings.view.minimumEyeDistanceM, (value) => update((d) => { d.view.minimumEyeDistanceM = value; }), 0.01, 0.3, 0.01, ' m')}
+          <p className="settings-hint">摄像头与屏幕平行时，填写摄像头相对屏幕中心的偏置（米）。X 向右、Y 向上、Z 向观看者。</p>
+          {number('摄像头偏置 X', settings.view.cameraOffsetX, (value) => update((d) => { d.view.cameraOffsetX = value; }), -1, 1, 0.001, ' m')}
+          {number('摄像头偏置 Y', settings.view.cameraOffsetY, (value) => update((d) => { d.view.cameraOffsetY = value; }), -1, 1, 0.001, ' m')}
+          {number('摄像头偏置 Z', settings.view.cameraOffsetZ, (value) => update((d) => { d.view.cameraOffsetZ = value; }), -1, 1, 0.001, ' m')}
           {number('相机近平面', settings.view.near, (value) => update((d) => { d.view.near = Math.min(value, d.view.far - 0.1); }), 0.02, 5, 0.01)}
-          {number('相机远平面', settings.view.far, (value) => update((d) => { d.view.far = Math.max(value, d.view.near + 0.1); }), 5, 100, 1)}
-          {number('鼠标水平幅度', settings.view.mouseXGain, (value) => update((d) => { d.view.mouseXGain = value; }), 0, 4, 0.01)}
-          {number('鼠标垂直幅度', settings.view.mouseYGain, (value) => update((d) => { d.view.mouseYGain = value; }), 0, 4, 0.01)}
+          {number('相机远平面', settings.view.far, (value) => update((d) => { d.view.far = Math.max(value, d.view.near + 0.1); }), 5, 5000, 1)}
           {number('跟随速度（越大越快）', settings.view.smoothing, (value) => update((d) => { d.view.smoothing = value; }), 1, 60, 1)}
         </Section>
         <Section title="跟踪响应">
-          <p className="settings-hint">实测模式使用统一物理比例；以下增益和偏移限制仅作用于演示模式。</p>
-          {number('水平跟随增益', settings.view.positionGain, (value) => update((d) => { d.view.positionGain = value; }), 0, 40, 0.1)}
-          {number('纵深跟随增益', settings.view.depthGain, (value) => update((d) => { d.view.depthGain = value; }), 0, 40, 0.1)}
-          {number('水平最大偏移', settings.view.xLimit, (value) => update((d) => { d.view.xLimit = value; }), 0.1, 8, 0.1)}
-          {number('垂直最大偏移', settings.view.yLimit, (value) => update((d) => { d.view.yLimit = value; }), 0.1, 8, 0.1)}
-          {number('观察距离最小值', settings.view.zMinimum, (value) => update((d) => { d.view.zMinimum = Math.min(value, d.view.zMaximum - 0.1); }), 0.5, 20, 0.1)}
-          {number('观察距离最大值', settings.view.zMaximum, (value) => update((d) => { d.view.zMaximum = Math.max(value, d.view.zMinimum + 0.1); }), 1, 30, 0.1)}
+          <p className="settings-hint">X、Y、Z 均使用同一米制比例；Z 为眼睛相对校准位置的真实前后移动。</p>
           <label className="settings-toggle"><span>反转摄像头水平移动</span><input type="checkbox" checked={settings.view.invertX} onChange={(event) => update((d) => { d.view.invertX = event.target.checked; })} /></label>
+          <label className="settings-toggle"><span>鼠标拖拽旋转模型</span><input type="checkbox" checked={settings.view.mouseDragEnabled} onChange={(event) => update((d) => { d.view.mouseDragEnabled = event.target.checked; })} /></label>
         </Section>
         <Section title="展示箱">
+          <label className="settings-toggle"><span>显示演示盒子（可选背景内容）</span><input type="checkbox" checked={settings.case.visible} onChange={(event) => update((d) => { d.case.visible = event.target.checked; })} /></label>
           {number('宽度', settings.case.width, (value) => update((d) => { d.case.width = value; }), 2, 20, 0.1)}
           {number('高度', settings.case.height, (value) => update((d) => { d.case.height = value; }), 2, 15, 0.1)}
           {number('深度', settings.case.depth, (value) => update((d) => { d.case.depth = value; }), 1, 20, 0.1)}
           {number('网格透明度', settings.case.gridOpacity, (value) => update((d) => { d.case.gridOpacity = value; }), 0, 1, 0.01)}
           {number('表面粗糙度', settings.case.roughness, (value) => update((d) => { d.case.roughness = value; }), 0, 1, 0.01)}
           {number('表面金属度', settings.case.metalness, (value) => update((d) => { d.case.metalness = value; }), 0, 1, 0.01)}
-          {number('雾起点', settings.case.fogNear, (value) => update((d) => { d.case.fogNear = Math.min(value, d.case.fogFar - 0.1); }), 0, 80, 0.5)}
-          {number('雾终点', settings.case.fogFar, (value) => update((d) => { d.case.fogFar = Math.max(value, d.case.fogNear + 0.1); }), 1, 100, 0.5)}
           {color('后墙', settings.case.roomColor, (value) => update((d) => { d.case.roomColor = value; }))}
           {color('侧墙与顶棚', settings.case.sideColor, (value) => update((d) => { d.case.sideColor = value; }))}
           {color('地面', settings.case.floorColor, (value) => update((d) => { d.case.floorColor = value; }))}
           {color('网格', settings.case.gridColor, (value) => update((d) => { d.case.gridColor = value; }))}
           {color('后框边线', settings.case.edgeColor, (value) => update((d) => { d.case.edgeColor = value; }))}
           {color('场景背景', settings.case.backgroundColor, (value) => update((d) => { d.case.backgroundColor = value; }))}
-          {color('雾颜色', settings.case.fogColor, (value) => update((d) => { d.case.fogColor = value; }))}
+          {color('无盒子时天空色', settings.case.skyColor, (value) => update((d) => { d.case.skyColor = value; }))}
         </Section>
         <Section title="模型">
-          <label className="settings-toggle"><span>高斯坐标翻转（绕 X 轴 180°）</span><input type="checkbox" checked={settings.model.gaussianFlipY} onChange={(event) => update((d) => { d.model.gaussianFlipY = event.target.checked; })} /></label>
-          <p className="settings-hint">扫描模型若上下颠倒可开启；高斯颜色包含拍摄时光照。</p>
-          <p className="settings-hint"><strong>屏幕平面 Z：</strong>负值在屏幕内，0 在屏幕平面，正值在屏幕外。</p>
-          {number('模型 X', settings.model.x, (value) => update((d) => { d.model.x = value; }), -8, 8, 0.01)}
-          {number('模型 Y', settings.model.y, (value) => update((d) => { d.model.y = value; }), -6, 6, 0.01)}
-          {number('屏幕平面 Z', settings.model.z, (value) => update((d) => { d.model.z = value; }), -12, 4.8, 0.01)}
+          <p className="settings-hint">世界坐标中屏幕平面固定为 <strong>z = 0</strong>；屏幕后方为负，朝向观看者为正。观察点 z 是眼睛到屏幕的距离，不是模型 z。</p>
+          {number('模型 X（场景单位）', settings.model.x, (value) => update((d) => { d.model.x = value; }), -8, 8, 0.01)}
+          {number('模型 Y（场景单位）', settings.model.y, (value) => update((d) => { d.model.y = value; }), -6, 6, 0.01)}
+          {number('相对窗口深度（米）', settings.model.depthM, (value) => update((d) => { d.model.depthM = value; }), -2, 2, 0.01, ' m')}
+          {number('模型旋转 X', settings.model.rotationX, (value) => update((d) => { d.model.rotationX = value; }), -Math.PI, Math.PI, 0.01, ' rad')}
+          {number('模型旋转 Y', settings.model.rotationY, (value) => update((d) => { d.model.rotationY = value; }), -Math.PI, Math.PI, 0.01, ' rad')}
+          {number('模型旋转 Z', settings.model.rotationZ, (value) => update((d) => { d.model.rotationZ = value; }), -Math.PI, Math.PI, 0.01, ' rad')}
+          <p className="settings-hint">负值在窗口后方，正值向观看者凸出；窗口只是投影视口，不限制模型尺寸。</p>
           {number('统一缩放', settings.model.scale, (value) => update((d) => { d.model.scale = value; }), 0.1, 4, 0.01)}
-          {number('金属度', settings.model.metalness, (value) => update((d) => { d.model.metalness = value; }), 0, 1, 0.01)}
-          {number('粗糙度', settings.model.roughness, (value) => update((d) => { d.model.roughness = value; }), 0, 1, 0.01)}
-          {color('主金属', settings.model.bronzeColor, (value) => update((d) => { d.model.bronzeColor = value; }))}
-          {color('深色金属', settings.model.darkBronzeColor, (value) => update((d) => { d.model.darkBronzeColor = value; }))}
-          {color('台座顶面', settings.model.plinthTopColor, (value) => update((d) => { d.model.plinthTopColor = value; }))}
-          {color('台座底座', settings.model.plinthColor, (value) => update((d) => { d.model.plinthColor = value; }))}
         </Section>
-        <Section title="外观与灯光">
+        <Section title="高级外观与灯光">
           <label className="settings-toggle"><span>卡顿时自动降低分辨率</span><input type="checkbox" checked={settings.lighting.autoResolution} onChange={(event) => update((d) => { d.lighting.autoResolution = event.target.checked; })} /></label>
           {number('渲染像素预算', settings.lighting.maxRenderMegapixels, (value) => update((d) => { d.lighting.maxRenderMegapixels = value; }), 0.5, 16, 0.1, ' MP')}
-          {number('高斯抗闪烁滤波', settings.lighting.gaussianBlur, (value) => update((d) => { d.lighting.gaussianBlur = value; }), 0.05, 1, 0.05)}
-          {number('高斯覆盖范围', settings.lighting.gaussianSigma, (value) => update((d) => { d.lighting.gaussianSigma = value; }), 2, Math.sqrt(8), 0.05)}
-          <p className="settings-hint">提高滤波会更柔和；缩小覆盖范围可减少透明叠加，但会削弱边缘。</p>
           {number('渲染像素比上限', settings.lighting.pixelRatioCap, (value) => update((d) => { d.lighting.pixelRatioCap = value; }), 1, 3, 0.1)}
           {number('色调曝光', settings.lighting.exposure, (value) => update((d) => { d.lighting.exposure = value; }), 0.1, 3, 0.01)}
           {number('半球光强度', settings.lighting.hemisphereIntensity, (value) => update((d) => { d.lighting.hemisphereIntensity = value; }), 0, 5, 0.01)}
@@ -629,15 +626,15 @@ export function DisplayCase() {
   const settingsRef = useRef<DisplaySettings>(cloneSettings());
   const targetRef = useRef<ViewPosition>({ x: 0, y: 0, z: baselineDepth(DEFAULT_SETTINGS) });
   const resetRef = useRef<() => void>(() => {});
-  const loadContentRef = useRef<(source: 'mesh' | 'gaussian' | File) => Promise<void>>(async () => {});
+  const loadContentRef = useRef<(source: 'mesh' | File) => Promise<void>>(async () => {});
   const draggingRef = useRef(false);
   const faceEnabledRef = useRef(true);
   const socketReadyRef = useRef(false);
   const trackingSessionRef = useRef(new TrackingSession());
   const latestPositionRef = useRef<ViewerPosition | null>(null);
-  const mousePositionRef = useRef({ x: 0, y: 0 });
+  const modelDragRef = useRef({ x: 0, y: 0 });
   const metricsRef = useRef({ frames: 0, trackingFps: 0, receivedAt: 0 });
-  const [settings, setSettings] = useState<DisplaySettings>(() => cloneSettings());
+  const [settings, setSettings] = useState<DisplaySettings>(() => loadStoredSettings());
   const [isMoving, setIsMoving] = useState(false);
   const [faceEnabled, setFaceEnabled] = useState(true);
   const [trackerState, setTrackerState] = useState<TrackerState>('connecting');
@@ -646,6 +643,10 @@ export function DisplayCase() {
   const [contentLabel, setContentLabel] = useState('网格模型');
   const [renderStats, setRenderStats] = useState('正在测量渲染帧率');
   const [metrics, setMetrics] = useState({ fps: 0, trackingFps: 0, age: null as number | null });
+
+  useEffect(() => {
+    try { window.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings)); } catch { /* storage may be disabled */ }
+  }, [settings]);
 
   useEffect(() => {
     if (!showMetrics) return;
@@ -667,14 +668,11 @@ export function DisplayCase() {
     const neutral = trackingSessionRef.current.neutral;
     const view = settings.view;
     if (faceEnabledRef.current && position && neutral) {
-      targetRef.current = {
-        x: clamp((position.x - neutral.x) * view.positionGain * (view.invertX ? -1 : 1), -view.xLimit, view.xLimit),
-        y: clamp((position.y - neutral.y) * view.positionGain, -view.yLimit, view.yLimit),
-        z: clamp(view.eyeDistance + (position.z - neutral.z) * view.depthGain, view.zMinimum, view.zMaximum),
-      };
+      targetRef.current = physicalView(position, neutral, settings.case.width,
+        view.visibleWidthM, view.neutralDistanceM, view.invertX, view.minimumEyeDistanceM,
+        { x: view.cameraOffsetX, y: view.cameraOffsetY, z: view.cameraOffsetZ });
     } else {
-      const mouse = faceEnabledRef.current ? { x: 0, y: 0 } : mousePositionRef.current;
-      targetRef.current = { x: mouse.x * view.mouseXGain, y: mouse.y * view.mouseYGain, z: baselineDepth(settings) };
+      targetRef.current = { x: 0, y: 0, z: baselineDepth(settings) };
     }
   }, [settings]);
 
@@ -682,10 +680,9 @@ export function DisplayCase() {
     setSettings((previous) => {
       const next = structuredClone(previous);
       mutate(next);
-      next.view.zMinimum = Math.min(next.view.zMinimum, next.view.zMaximum - 0.1);
-      next.view.eyeDistance = clamp(next.view.eyeDistance, next.view.zMinimum, next.view.zMaximum);
-      next.view.near = Math.min(next.view.near, next.view.zMinimum / 2);
-      next.view.far = Math.max(next.view.far, next.view.zMaximum + next.case.depth + 1);
+      next.view.minimumEyeDistanceM = clamp(next.view.minimumEyeDistanceM, 0.005, Math.max(0.005, next.view.neutralDistanceM));
+      next.view.near = Math.max(0.0001, Math.min(next.view.near, next.view.far - 0.1));
+      next.view.far = Math.max(next.view.far, next.case.depth + 5);
       return next;
     });
   }, []);
@@ -693,9 +690,9 @@ export function DisplayCase() {
     const next = cloneSettings();
     latestPositionRef.current = null;
     trackingSessionRef.current.resetCalibration();
-    mousePositionRef.current = { x: 0, y: 0 };
     settingsRef.current = next;
     setSettings(next);
+    try { window.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(next)); } catch { /* storage may be disabled */ }
   }, []);
 
   const calibrateFace = useCallback(() => {
@@ -709,7 +706,6 @@ export function DisplayCase() {
 
   const resetView = useCallback(() => {
     if (faceEnabledRef.current) return calibrateFace();
-    mousePositionRef.current = { x: 0, y: 0 };
     targetRef.current = { x: 0, y: 0, z: baselineDepth(settingsRef.current) };
     draggingRef.current = false;
     setIsMoving(false);
@@ -719,7 +715,6 @@ export function DisplayCase() {
   const toggleTrackingMode = useCallback(() => {
     const enabled = !faceEnabledRef.current;
     latestPositionRef.current = null;
-    mousePositionRef.current = { x: 0, y: 0 };
     faceEnabledRef.current = enabled;
     setFaceEnabled(enabled);
     draggingRef.current = false;
@@ -778,21 +773,16 @@ export function DisplayCase() {
           return;
         }
         latestPositionRef.current = position;
-        const horizontalDirection = currentSettings.view.invertX ? -1 : 1;
-        targetRef.current = currentSettings.view.physicalMode
-          ? physicalView(
-              position,
-              neutral,
-              currentSettings.case.width,
-              currentSettings.view.visibleWidthM,
-              currentSettings.view.neutralDistanceM,
-              currentSettings.view.invertX,
-            )
-          : {
-          x: clamp((position.x - neutral.x) * currentSettings.view.positionGain * horizontalDirection, -currentSettings.view.xLimit, currentSettings.view.xLimit),
-          y: clamp((position.y - neutral.y) * currentSettings.view.positionGain, -currentSettings.view.yLimit, currentSettings.view.yLimit),
-          z: clamp(currentSettings.view.eyeDistance + (position.z - neutral.z) * currentSettings.view.depthGain, currentSettings.view.zMinimum, currentSettings.view.zMaximum),
-        };
+        targetRef.current = physicalView(
+          position,
+          neutral,
+          currentSettings.case.width,
+          currentSettings.view.visibleWidthM,
+          currentSettings.view.neutralDistanceM,
+          currentSettings.view.invertX,
+          currentSettings.view.minimumEyeDistanceM,
+          { x: currentSettings.view.cameraOffsetX, y: currentSettings.view.cameraOffsetY, z: currentSettings.view.cameraOffsetZ },
+        );
         setTrackerState('tracking');
       };
       socket.onerror = () => socket?.close();
@@ -818,8 +808,7 @@ export function DisplayCase() {
     if (!mount) return;
     const initial = settingsRef.current;
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(initial.case.backgroundColor);
-    scene.fog = new THREE.Fog(initial.case.fogColor, initial.case.fogNear, initial.case.fogFar);
+    scene.background = new THREE.Color(initial.case.visible ? initial.case.backgroundColor : initial.case.skyColor);
     const camera = new THREE.PerspectiveCamera(45, 16 / 9, initial.view.near, initial.view.far);
     const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
     renderer.shadowMap.enabled = true;
@@ -839,41 +828,39 @@ export function DisplayCase() {
     scene.add(artifact);
     let disposed = false;
     let contentRequest = 0;
-    type GaussianLayer = ReturnType<typeof import('@/lib/gaussian-layer').createGaussianLayer>;
-    let gaussian: GaussianLayer | null = null;
-    let gaussianLoading: Promise<GaussianLayer> | null = null;
+    let uploadedModel: THREE.Object3D | null = null;
     loadContentRef.current = async (source) => {
       const request = ++contentRequest;
       if (source === 'mesh') {
-        gaussian?.hide();
+        if (uploadedModel) uploadedModel.visible = false;
         artifact.visible = true;
         renderer.shadowMap.needsUpdate = true;
         setContentLabel('网格模型');
         return;
       }
-      setContentLabel('正在准备高斯模型…');
+      setContentLabel('正在加载模型…');
       try {
-        gaussianLoading ??= import('@/lib/gaussian-layer').then(({ createGaussianLayer }) => {
-          if (disposed) throw new Error('页面已关闭');
-          gaussian = createGaussianLayer(renderer, scene);
-          return gaussian;
-        }).catch((error) => {
-          gaussianLoading = null;
-          throw error;
+        const { GLTFLoader } = await import('three/examples/jsm/loaders/GLTFLoader.js');
+        const url = URL.createObjectURL(source);
+        const gltf = await new Promise<{ scene: THREE.Group }>((resolve, reject) => {
+          new GLTFLoader().load(url, resolve, undefined, reject);
         });
-        const layer = await gaussianLoading;
+        URL.revokeObjectURL(url);
         if (disposed || request !== contentRequest) return;
-        const label = await layer.load(source === 'gaussian' ? undefined : source);
-        if (disposed || request !== contentRequest || !label) return;
+        if (uploadedModel) { scene.remove(uploadedModel); disposeObject(uploadedModel); }
+        uploadedModel = gltf.scene;
+        scene.add(uploadedModel);
+        uploadedModel.position.copy(artifact.position);
+        uploadedModel.scale.copy(artifact.scale);
         artifact.visible = false;
         renderer.shadowMap.needsUpdate = true;
-        setContentLabel(label);
+        setContentLabel(source.name);
       } catch (error) {
         if (!disposed && request === contentRequest) {
-          gaussian?.hide();
+          if (uploadedModel) uploadedModel.visible = false;
           artifact.visible = true;
           renderer.shadowMap.needsUpdate = true;
-          setContentLabel(`已保留网格：${error instanceof Error ? error.message : String(error)}`);
+          setContentLabel(`模型加载失败，已保留网格：${error instanceof Error ? error.message : String(error)}`);
         }
       }
     };
@@ -942,11 +929,11 @@ export function DisplayCase() {
         frameIntervals = [];
       }
       motion.update(targetRef.current, deltaSeconds, active.view.smoothing);
-      if (gaussian) {
-        gaussian.tune(active.lighting.gaussianBlur, active.lighting.gaussianSigma);
-        gaussian.group.position.copy(artifact.position);
-        gaussian.group.scale.copy(artifact.scale);
-        gaussian.group.rotation.x = active.model.gaussianFlipY ? Math.PI : 0;
+      artifact.rotation.set(active.model.rotationX, active.model.rotationY, active.model.rotationZ);
+      if (uploadedModel) {
+        uploadedModel.position.copy(artifact.position);
+        uploadedModel.scale.copy(artifact.scale);
+        uploadedModel.rotation.set(active.model.rotationX, active.model.rotationY, active.model.rotationZ);
       }
       applyWindowProjection(
         camera,
@@ -974,27 +961,30 @@ export function DisplayCase() {
       loadContentRef.current = async () => {};
       cancelAnimationFrame(animationFrame);
       observer.disconnect();
-      void (gaussian?.dispose() ?? Promise.resolve()).finally(() => {
-        disposeObject(scene);
-        renderer.dispose();
-        renderer.domElement.remove();
-      });
+      disposeObject(scene);
+      renderer.dispose();
+      renderer.domElement.remove();
     };
   }, []);
 
   const moveView = (event: React.PointerEvent<HTMLDivElement>) => {
-    if (faceEnabledRef.current || !draggingRef.current) return;
-    const bounds = event.currentTarget.getBoundingClientRect();
-    const x = ((event.clientX - bounds.left) / bounds.width) * 2 - 1;
-    const y = 1 - ((event.clientY - bounds.top) / bounds.height) * 2;
+    if (!draggingRef.current || !settingsRef.current.view.mouseDragEnabled) return;
+    const previous = modelDragRef.current;
+    const dx = event.clientX - previous.x;
+    const dy = event.clientY - previous.y;
+    modelDragRef.current = { x: event.clientX, y: event.clientY };
     const active = settingsRef.current;
-    mousePositionRef.current = { x, y };
-    targetRef.current = { x: x * active.view.mouseXGain, y: y * active.view.mouseYGain, z: baselineDepth(active) };
+    const next = structuredClone(active);
+    next.model.rotationY += dx * 0.01;
+    next.model.rotationX += dy * 0.01;
+    settingsRef.current = next;
+    setSettings(next);
     setIsMoving(true);
   };
   const startView = (event: React.PointerEvent<HTMLDivElement>) => {
-    if (faceEnabledRef.current) return;
+    if (!settingsRef.current.view.mouseDragEnabled) return;
     draggingRef.current = true;
+    modelDragRef.current = { x: event.clientX, y: event.clientY };
     event.currentTarget.setPointerCapture(event.pointerId);
     setIsMoving(true);
     moveView(event);
@@ -1011,19 +1001,21 @@ export function DisplayCase() {
     else void element.requestFullscreen();
   };
 
-  const statusLabel = !faceEnabled && isMoving ? '鼠标视角偏移' : trackerLabels[trackerState];
+  const statusLabel = isMoving ? '鼠标旋转模型' : trackerLabels[trackerState];
   const statusColor = trackerState === 'tracking' ? 'bg-[#71c8a2]' : trackerState === 'offline' ? 'bg-[#e36f63]' : trackerState === 'lost' ? 'bg-[#e8a45e]' : 'bg-[#7fb3c8]';
   return (
     <section className="max-w-none" style={{ width: `min(100vw, ${100 * settings.case.width / settings.case.height}vh)` }}>
-      <div className="case-shell relative overflow-hidden bg-[#101415] shadow-[0_42px_100px_rgba(0,0,0,0.55)]">
+      <div
+        className="case-shell relative overflow-hidden bg-[#101415] shadow-[0_42px_100px_rgba(0,0,0,0.55)]"
+        style={{ '--case-aspect': settings.case.width / settings.case.height } as React.CSSProperties}
+      >
         <div data-case-viewport style={{ aspectRatio: `${settings.case.width} / ${settings.case.height}` }} className="relative w-full cursor-crosshair overflow-hidden bg-[#171b1c]" onPointerDown={startView} onPointerMove={moveView} onPointerUp={endView} onPointerCancel={endView}>
           <div ref={mountRef} className="absolute inset-0" aria-label="三维虚拟展示箱" />
           <div className="screen-frame pointer-events-none absolute inset-0 z-30" aria-hidden="true" />
           <div className="absolute left-4 top-4 z-40 max-w-[55%] rounded-lg bg-black/50 p-2 text-xs text-white/80" onPointerDown={(event) => event.stopPropagation()}>
             <div className="flex flex-wrap gap-3">
               <button type="button" onClick={() => void loadContentRef.current('mesh')}>网格</button>
-              <button type="button" onClick={() => void loadContentRef.current('gaussian')}>高斯测试</button>
-              <label className="cursor-pointer">导入高斯<input aria-label="导入本地高斯模型" type="file" className="sr-only" accept=".ply,.spz,.splat,.ksplat" onChange={(event) => { const file = event.target.files?.[0]; if (file) void loadContentRef.current(file); event.target.value = ''; }} /></label>
+              <label className="cursor-pointer">上传模型<input aria-label="上传本地三维模型" type="file" className="sr-only" accept=".glb,.gltf,model/gltf-binary,model/gltf+json" onChange={(event) => { const file = event.target.files?.[0]; if (file) void loadContentRef.current(file); event.target.value = ''; }} /></label>
             </div>
             <output className="mt-1 block break-words text-[10px] text-white/60">{contentLabel}</output>
             <output className="block text-[10px] text-white/50" aria-label="渲染性能">{renderStats}</output>
@@ -1036,7 +1028,8 @@ export function DisplayCase() {
           </output>}
           <div className="absolute bottom-4 left-4 right-4 z-40 flex items-end justify-end gap-3 sm:bottom-7 sm:left-8 sm:right-8" onPointerDown={(event) => event.stopPropagation()}><div className="flex gap-2">
             <Button type="button" variant="outline" size="sm" aria-pressed={showMetrics} onClick={() => setShowMetrics((value) => !value)} className="border-white/15 bg-black/35 text-white">性能</Button>
-            <Button type="button" variant="outline" size="icon-lg" aria-label={faceEnabled ? '切换到鼠标模式' : '启用人脸跟踪'} onClick={toggleTrackingMode} className={`border-white/15 text-white hover:bg-black/55 hover:text-white ${faceEnabled ? 'bg-[#6f9f91]/45' : 'bg-black/35'}`}>{faceEnabled ? <ScanFace /> : <MousePointer2 />}</Button>
+            <Button type="button" variant="outline" size="icon-lg" aria-label={faceEnabled ? '关闭面部追踪' : '开启面部追踪'} title={faceEnabled ? '面追：开启' : '面追：关闭'} onClick={toggleTrackingMode} className={`border-white/15 text-white hover:bg-black/55 hover:text-white ${faceEnabled ? 'bg-[#6f9f91]/45' : 'bg-black/35'}`}><ScanFace /></Button>
+            <Button type="button" variant="outline" size="icon-lg" aria-label={settings.view.mouseDragEnabled ? '关闭鼠标拖拽旋转' : '开启鼠标拖拽旋转'} title={settings.view.mouseDragEnabled ? '鼠标拖拽：开启' : '鼠标拖拽：关闭'} onClick={() => updateSettings((draft) => { draft.view.mouseDragEnabled = !draft.view.mouseDragEnabled; })} className={`border-white/15 text-white hover:bg-black/55 hover:text-white ${settings.view.mouseDragEnabled ? 'bg-[#6f9f91]/45' : 'bg-black/35'}`}><MousePointer2 /></Button>
             <Button type="button" variant="outline" size="icon-lg" aria-label={faceEnabled ? '重新校准中心' : '复位视角'} onClick={resetView} className="border-white/15 bg-black/35 text-white hover:bg-black/55 hover:text-white">{faceEnabled ? <LocateFixed /> : <RotateCcw />}</Button>
             <Button type="button" variant="outline" size="icon-lg" aria-label="打开显示设置" aria-expanded={settingsOpen} onClick={() => setSettingsOpen((current) => !current)} className={`border-white/15 text-white hover:bg-black/55 hover:text-white ${settingsOpen ? 'bg-[#6f9f91]/45' : 'bg-black/35'}`}><Settings2 /></Button>
             <Button type="button" variant="outline" size="icon-lg" aria-label="全屏查看" onClick={toggleFullscreen} className="border-white/15 bg-black/35 text-white hover:bg-black/55 hover:text-white"><Maximize2 /></Button>

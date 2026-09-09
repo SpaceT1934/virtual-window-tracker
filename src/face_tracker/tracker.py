@@ -9,10 +9,10 @@ import mediapipe as mp
 import numpy as np
 
 from .config import Settings
+from .calibration import CalibrationProvider
 from .filtering import PositionFilter
 from .selection import FaceSelector
 from .geometry import (
-    CameraIntrinsics,
     Point2,
     average_points,
     estimate_viewer_position_m,
@@ -55,6 +55,9 @@ class FacePositionTracker:
         )
         self._last_timestamp_ms = -1
         self._selector = FaceSelector()
+        self._camera_calibration = CalibrationProvider(
+            settings.camera_hfov_deg, settings.calibration_path
+        )
 
     def close(self) -> None:
         self._detector.close()
@@ -104,11 +107,18 @@ class FacePositionTracker:
         eye_center = average_points([left_eye, right_eye])
         eye_distance = pixel_distance(left_eye, right_eye)
 
-        intrinsics = CameraIntrinsics.from_horizontal_fov(
-            width, height, self.settings.camera_hfov_deg
+        camera = self._camera_calibration.at(width, height)
+        # Use undistorted points for metric geometry, while retaining the
+        # original detector pixels in the telemetry payload for diagnostics.
+        undistorted = camera.undistort(
+            np.array([[left_eye.x, left_eye.y], [right_eye.x, right_eye.y]])
         )
+        left_metric = Point2(float(undistorted[0, 0]), float(undistorted[0, 1]))
+        right_metric = Point2(float(undistorted[1, 0]), float(undistorted[1, 1]))
+        metric_center = average_points([left_metric, right_metric])
+        metric_distance = pixel_distance(left_metric, right_metric)
         raw_position = estimate_viewer_position_m(
-            eye_center, eye_distance, intrinsics, self.settings.assumed_ipd_m
+            metric_center, metric_distance, camera.intrinsics, self.settings.assumed_ipd_m
         )
         timestamp_s = time.perf_counter()
         filtered_position = None
@@ -157,8 +167,9 @@ class FacePositionTracker:
                             "z": round(filtered_position[2], 6),
                         },
                         "coordinate_system": "x-right_y-up_z-toward-viewer",
-                        "calibrated": intrinsics.calibrated,
-                        "method": "assumed-horizontal-fov-and-ipd",
+                        "calibrated": camera.intrinsics.calibrated,
+                        "intrinsics_calibrated": camera.intrinsics.calibrated,
+                        "method": "calibrated-intrinsics-undistorted-eyes-and-ipd" if camera.intrinsics.calibrated else "assumed-horizontal-fov-and-ipd",
                     }
                     if raw_position is not None and filtered_position is not None
                     else None

@@ -54,9 +54,11 @@ export function createGaussianLayer(renderer: THREE.WebGLRenderer, scene: THREE.
         const size = box.getSize(new THREE.Vector3());
         const extent = Math.max(size.x, size.y, size.z);
         if (!Number.isFinite(extent) || extent <= 0) throw new Error('模型没有有效的高斯范围；普通网格 PLY 不等于高斯 PLY。');
-        const scale = 2.6 / extent;
-        mesh.scale.setScalar(scale);
-        mesh.position.copy(box.getCenter(new THREE.Vector3())).multiplyScalar(-scale);
+        // Preserve asset scale. The window is a projection aperture, not a
+        // container that silently fits every asset into its rectangle. Users
+        // can position/scale content explicitly in the scene settings.
+        mesh.scale.setScalar(1);
+        mesh.position.copy(box.getCenter(new THREE.Vector3())).multiplyScalar(-1);
         if (active) { group.remove(active); active.dispose(); }
         active = mesh;
         group.add(mesh);
