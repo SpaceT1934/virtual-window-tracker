@@ -17,6 +17,7 @@ from .geometry import (
     pixel_distance,
     screen_normalized,
 )
+from .selection import FaceSelector
 
 # YuNet detect() returns an array with shape (N, 15):
 #   [0:4]   bounding box       (x, y, width, height)
@@ -72,6 +73,7 @@ class YuNetPositionTracker:
             settings.filter_beta,
             settings.filter_derivative_cutoff,
         )
+        self._selector = FaceSelector()
         self._last_timestamp_ms = -1
         self._facemark: Any | None = None
         # LBF is an optional enhancement. cv2.face is only present when the
@@ -142,7 +144,24 @@ class YuNetPositionTracker:
                 "quality_reason": "face_not_found",
             }
 
-        current = faces[0]
+        # Lock onto a single viewer with spatial continuity (same FaceSelector
+        # as BlazeFace): keep the face nearest the previously selected box when
+        # its position/size stay plausible, otherwise stop rather than switch.
+        normalized_boxes = [
+            (float(f[0]) / width, float(f[1]) / height, float(f[2]) / width, float(f[3]) / height)
+            for f in faces
+        ]
+        selected_index = self._selector.select(normalized_boxes, time.perf_counter())
+        if selected_index is None:
+            self._position_filter.reset()
+            return {
+                "tracking": False,
+                "face": None,
+                "tracker_backend": "yunet",
+                "quality_reason": "selection_rejected",
+            }
+
+        current = faces[selected_index]
         box = current[:4]
         min_x, min_y, box_width, box_height = (
             float(box[0]), float(box[1]), float(box[2]), float(box[3])
