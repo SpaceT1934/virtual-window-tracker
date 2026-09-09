@@ -14,7 +14,8 @@
 - 模型的“相对窗口深度（米）”带符号：负值在窗后，正值向观看者凸出。程序按 `z_world = depth_m × (case.width / visibleWidthM)` 转换，避免把米和场景单位混用。
 - `createDisplayCase()` 在 `web/components/display-case.tsx` 中构造箱体；前框由 CSS 屏幕边框叠加，Three 场景的几何前口是 `z=0`。
 - 完整场景可用 `web/lib/window-anchor.ts` 的 `WindowAnchor` 声明场景中的窗户中心、方向和真实宽高，再将其三个角传给 `applyWindowProjection()`；窗户是场景投影视口，不是内容容器。
-- Python 服务输出的观看位置是 camera-space：`x-right, y-up, z-toward-viewer`。当前网页默认假设摄像头坐标轴与屏幕世界轴平行；相机相对屏幕的真实旋转/平移外参尚未接入。
+- Python 服务输出的观看位置是 camera-space：`x-right, y-up, z-toward-viewer`。当前网页假设摄像头坐标轴与屏幕世界轴平行。
+- 当前已支持“平行摄像头”的平移偏置：在设置中填写摄像头相对屏幕中心的 X/Y/Z（米）。暂不处理摄像头相对屏幕的旋转；若摄像头有明显俯仰、偏航或滚转，仍需后续完整外参标定。
 
 ## 离轴投影
 

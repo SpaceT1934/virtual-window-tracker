@@ -35,6 +35,9 @@ type DisplaySettings = {
     visibleWidthM: number;
     neutralDistanceM: number;
     minimumEyeDistanceM: number;
+    cameraOffsetX: number;
+    cameraOffsetY: number;
+    cameraOffsetZ: number;
     near: number;
     far: number;
     invertX: boolean;
@@ -120,6 +123,9 @@ const DEFAULT_SETTINGS: DisplaySettings = {
     visibleWidthM: 0.53,
     neutralDistanceM: 0.6,
     minimumEyeDistanceM: 0.03,
+    cameraOffsetX: 0,
+    cameraOffsetY: 0,
+    cameraOffsetZ: 0,
     near: 0.1,
     far: 200,
     invertX: true,
@@ -523,6 +529,10 @@ function SettingsPanel({ settings, update, reset, onClose }: {
           {number('画面区域实测宽度', settings.view.visibleWidthM, (value) => update((d) => { d.view.visibleWidthM = value; }), 0.1, 3, 0.01, ' m')}
           {number('校准时眼屏距离', settings.view.neutralDistanceM, (value) => update((d) => { d.view.neutralDistanceM = value; }), 0.2, 2, 0.01, ' m')}
           {number('最小眼屏距离', settings.view.minimumEyeDistanceM, (value) => update((d) => { d.view.minimumEyeDistanceM = value; }), 0.01, 0.3, 0.01, ' m')}
+          <p className="settings-hint">摄像头与屏幕平行时，填写摄像头相对屏幕中心的偏置（米）。X 向右、Y 向上、Z 向观看者。</p>
+          {number('摄像头偏置 X', settings.view.cameraOffsetX, (value) => update((d) => { d.view.cameraOffsetX = value; }), -1, 1, 0.001, ' m')}
+          {number('摄像头偏置 Y', settings.view.cameraOffsetY, (value) => update((d) => { d.view.cameraOffsetY = value; }), -1, 1, 0.001, ' m')}
+          {number('摄像头偏置 Z', settings.view.cameraOffsetZ, (value) => update((d) => { d.view.cameraOffsetZ = value; }), -1, 1, 0.001, ' m')}
           {number('相机近平面', settings.view.near, (value) => update((d) => { d.view.near = Math.min(value, d.view.far - 0.1); }), 0.02, 5, 0.01)}
           {number('相机远平面', settings.view.far, (value) => update((d) => { d.view.far = Math.max(value, d.view.near + 0.1); }), 5, 5000, 1)}
           {number('鼠标水平幅度', settings.view.mouseXGain, (value) => update((d) => { d.view.mouseXGain = value; }), 0, 4, 0.01)}
@@ -655,7 +665,8 @@ export function DisplayCase() {
     const view = settings.view;
     if (faceEnabledRef.current && position && neutral) {
       targetRef.current = physicalView(position, neutral, settings.case.width,
-        view.visibleWidthM, view.neutralDistanceM, view.invertX, view.minimumEyeDistanceM);
+        view.visibleWidthM, view.neutralDistanceM, view.invertX, view.minimumEyeDistanceM,
+        { x: view.cameraOffsetX, y: view.cameraOffsetY, z: view.cameraOffsetZ });
     } else {
       const mouse = faceEnabledRef.current ? { x: 0, y: 0 } : mousePositionRef.current;
       targetRef.current = { x: mouse.x * view.mouseXGain, y: mouse.y * view.mouseYGain, z: baselineDepth(settings) };
@@ -769,6 +780,7 @@ export function DisplayCase() {
           currentSettings.view.neutralDistanceM,
           currentSettings.view.invertX,
           currentSettings.view.minimumEyeDistanceM,
+          { x: currentSettings.view.cameraOffsetX, y: currentSettings.view.cameraOffsetY, z: currentSettings.view.cameraOffsetZ },
         );
         setTrackerState('tracking');
       };

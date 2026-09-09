@@ -1,4 +1,5 @@
 export type Position = { x: number; y: number; z: number };
+export type CameraOffset = Position;
 
 export function isPosition(value: unknown): value is Position {
   if (!value || typeof value !== 'object') return false;
@@ -87,21 +88,23 @@ export class TrackingSession {
 
 export function physicalView(position: Position, neutral: Position, windowWidth: number,
                              visibleWidthM: number, neutralDistanceM: number, invertX: boolean,
-                             minimumEyeDistanceM = 0.03): Position {
+                             minimumEyeDistanceM = 0.03,
+                             cameraOffset: CameraOffset = { x: 0, y: 0, z: 0 }): Position {
   // Physical width refers to the visible rendered rectangle, NOT the monitor diagonal.
   const unitsPerM = windowWidth / visibleWidthM;
-  // The neutral sample is the measured eye-to-screen distance.  Map movement
-  // as an affine displacement around that point; scaling the absolute z value
-  // by neutralDistance/neutral.z silently distorts x/y and makes a metric
-  // tracker disagree with the rear box when its camera is offset from the
-  // screen.  This keeps the neutral eye exactly at (0, 0, D) and preserves a
-  // single metres-to-world-units scale on all three axes.
+  // The tracker reports absolute camera-space metres. With parallel camera
+  // and screen axes, translation is sufficient: eye_screen = scale *
+  // eye_camera + camera_origin_screen. The known neutral eye-to-screen
+  // distance corrects the remaining monocular/IPD scale error, while the
+  // same scale is retained on all three axes.
+  const neutralCameraDepthM = Math.max(1e-6, neutralDistanceM - cameraOffset.z);
+  const metricScale = neutralCameraDepthM / Math.max(1e-6, neutral.z);
   return {
-    x: (position.x - neutral.x) * unitsPerM * (invertX ? -1 : 1),
-    y: (position.y - neutral.y) * unitsPerM,
-    // Keep the eye in front of the window.  The tracker is camera-space and
+    x: (position.x * metricScale * (invertX ? -1 : 1) + cameraOffset.x) * unitsPerM,
+    y: (position.y * metricScale + cameraOffset.y) * unitsPerM,
+    // Keep the eye in front of the window. The tracker is camera-space and
     // can briefly overshoot during occlusion; clamping here prevents one bad
     // sample from making the render loop throw while preserving real motion.
-    z: Math.max(minimumEyeDistanceM, neutralDistanceM + position.z - neutral.z) * unitsPerM,
+    z: Math.max(minimumEyeDistanceM, position.z * metricScale + cameraOffset.z) * unitsPerM,
   };
 }

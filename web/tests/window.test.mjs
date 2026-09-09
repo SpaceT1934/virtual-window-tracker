@@ -126,24 +126,28 @@ test('new identity and reconnection require a new calibration', () => {
 });
 test('physical mapping uses one metric scale across all three axes', () => {
   const p = physicalView({ x: 0.05, y: 0.05, z: 0.55 }, { x: 0, y: 0, z: 0.5 }, 8, 0.5, 0.6, false);
-  assert.ok(Math.abs(p.x - 0.8) < 1e-9);
-  assert.ok(Math.abs(p.y - 0.8) < 1e-9);
-  assert.ok(Math.abs(p.z - 10.4) < 1e-9);
+  assert.ok(Math.abs(p.x - 0.96) < 1e-9);
+  assert.ok(Math.abs(p.y - 0.96) < 1e-9);
+  assert.ok(Math.abs(p.z - 10.56) < 1e-9);
 });
-test('physical mapping anchors neutral depth and preserves metric deltas', () => {
-  const neutral = { x: .11, y: -.08, z: .73 };
+test('physical mapping calibrates absolute camera geometry to neutral depth', () => {
+  const neutral = { x: 0, y: 0, z: .5 };
   const p = physicalView(neutral, neutral, 8, .5, .6, true);
   assert.ok(Math.abs(p.x) < 1e-12);
   assert.ok(Math.abs(p.y) < 1e-12);
   assert.ok(Math.abs(p.z - 9.6) < 1e-12);
-  const moved = physicalView({ x: .21, y: -.03, z: .83 }, neutral, 8, .5, .6, true);
-  assert.ok(Math.abs(moved.x + 1.6) < 1e-12);
-  assert.ok(Math.abs(moved.y - .8) < 1e-12);
-  assert.ok(Math.abs(moved.z - 11.2) < 1e-12);
+  const moved = physicalView({ x: .1, y: .05, z: .6 }, neutral, 8, .5, .6, true);
+  assert.ok(Math.abs(moved.x + 1.92) < 1e-12);
+  assert.ok(Math.abs(moved.y - .96) < 1e-12);
+  assert.ok(Math.abs(moved.z - 11.52) < 1e-12);
 });
 test('physical mapping keeps an overshooting eye in front of the window', () => {
   const p = physicalView({ x: 0, y: 0, z: 0.01 }, { x: 0, y: 0, z: 0.6 }, 8, .5, .6, false, .05);
   assert.ok(Math.abs(p.z - .8) < 1e-12);
+});
+test('physical mapping applies a parallel camera offset without changing scale', () => {
+  const p = physicalView({ x: 0, y: 0, z: .6 }, { x: 0, y: 0, z: .6 }, 8, .5, .6, false, .03, { x: .02, y: -.01, z: .04 });
+  assert.deepEqual(p, { x: .32, y: -.16, z: 9.6 });
 });
 
 test('side-on face cannot set neutral but can be tracked after calibration', () => {
