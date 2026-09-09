@@ -193,7 +193,13 @@ canvas { display: block; }
 }
 .settings-panel-header h2 { margin: 0; font-size: 1rem; font-weight: 600; }
 .settings-intro { margin: 0; padding: 0.45rem 0.9rem 0.65rem; color: #a7b3ae; font-size: 0.72rem; }
-.settings-scroll { overflow-y: auto; overscroll-behavior: contain; padding: 0 0.75rem 0.75rem; }
+.settings-scroll { display: flex; flex-direction: column; overflow-y: auto; overscroll-behavior: contain; padding: 0 0.75rem 0.75rem; }
+.settings-section-view { order: 1; }
+.settings-section-model { order: 2; }
+.settings-section-tracking { order: 3; }
+.settings-section-case { order: 4; }
+.settings-section-connection { order: 5; }
+.settings-section-advanced { order: 6; }
 .settings-section { border-top: 1px solid rgb(255 255 255 / 8%); }
 .settings-section-heading {
   display: flex;
