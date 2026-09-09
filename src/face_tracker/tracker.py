@@ -165,6 +165,12 @@ class FacePositionTracker:
                 ),
                 "head_rotation_deg": None,
                 "facial_transformation_matrix": None,
+                "model": "mediapipe-blaze-face-short-range",
+                "quality": {"tracking_level": "eyes_geometry", "valid_points": 2},
+                "debug_points": [
+                    {"name": "left_eye", "x": round(left_eye.x / width, 6), "y": round(left_eye.y / height, 6), "pixel": {"x": left_eye.x, "y": left_eye.y}},
+                    {"name": "right_eye", "x": round(right_eye.x / width, 6), "y": round(right_eye.y / height, 6), "pixel": {"x": right_eye.x, "y": right_eye.y}},
+                ],
             },
         }
 

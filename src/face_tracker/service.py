@@ -21,6 +21,7 @@ class TrackingService:
         self._thread: threading.Thread | None = None
         self._latest: dict[str, Any] | None = None
         self._published_monotonic = 0.0
+        self._fps_samples: list[float] = []
         self._status: dict[str, Any] = {
             "state": "stopped",
             "error": None,
@@ -90,6 +91,8 @@ class TrackingService:
                         sample.image, int(sample.monotonic_s * 1000)
                     )
                     finished = time.perf_counter()
+                    self._fps_samples.append(sample.fps)
+                    self._fps_samples = self._fps_samples[-30:]
                     if (
                         not camera.is_current(sample)
                         or finished - sample.monotonic_s > 0.25
@@ -112,6 +115,7 @@ class TrackingService:
                             "width": int(sample.image.shape[1]),
                             "height": int(sample.image.shape[0]),
                             "fps": round(sample.fps, 2),
+                            "fps_window": round(sum(self._fps_samples) / len(self._fps_samples), 2),
                         },
                         **tracking,
                     }

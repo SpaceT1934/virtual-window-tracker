@@ -82,6 +82,8 @@ class LandmarkPositionTracker:
                         'method': 'canonical-face-pnp-assumed-ipd'},
                     'head_rotation_deg': pose.angles,
                     'facial_transformation_matrix': None,
+                    'model': 'mediapipe-face-landmarker',
+                    'debug_points': [{'index': int(i), 'x': float(landmarks[i].x), 'y': float(landmarks[i].y), 'z': (float(getattr(landmarks[i], 'z')) if getattr(landmarks[i], 'z', None) is not None else None)} for i in range(len(landmarks))],
                     'quality': {'reprojection_error_px': round(pose.reprojection_px, 3),
                                 'inlier_ratio': pose.inlier_ratio, 'pose_solver': pose.solver,
                                 'stationary': self.stable.stationary},
