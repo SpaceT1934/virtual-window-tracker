@@ -56,9 +56,9 @@ def main() -> None:
     serve = subparsers.add_parser("serve", help="Start REST and WebSocket API")
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=8765)
-    serve.add_argument("--tracker", choices=["detector", "landmarker"])
+    serve.add_argument("--tracker", choices=["detector", "landmarker", "yunet"])
     preview = subparsers.add_parser("preview", help="Open an annotated camera preview")
-    preview.add_argument("--tracker", choices=["detector", "landmarker"])
+    preview.add_argument("--tracker", choices=["detector", "landmarker", "yunet"])
 
     args = parser.parse_args()
     settings = Settings.from_env()

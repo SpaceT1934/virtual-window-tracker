@@ -211,7 +211,8 @@ WebSocket 只在产生新结果时发送数据，`sequence` 可用于判断是�
 
 | 变量 | 默认值 | 说明 |
 |---|---:|---|
-| `FACE_CAMERA_SOURCE` | `0` | 摄像头编号，也可以是视频文件绝对路径 |
+| `FACE_TRACKER_BACKEND` | `detector` | 检测后端:`detector`(BlazeFace)/ `landmarker`(face_landmarker 68 点)/ `yunet`(OpenCV YuNet + Facemark LBF) |
+| `FACE_CAMERA_SOURCE` | `0` | 摄像头编号,也可以是视频文件绝对路径 |
 | `FACE_CAMERA_WIDTH` | `1280` | 请求的摄像头宽度 |
 | `FACE_CAMERA_HEIGHT` | `720` | 请求的摄像头高度 |
 | `FACE_CAMERA_FPS` | `30` | 请求帧率，最终结果取决于摄像头 |
@@ -241,6 +242,23 @@ FACE_CAMERA_SOURCE=1 uv run face-tracker preview
 ```bash
 FACE_CAMERA_SOURCE=/absolute/path/to/video.mp4 uv run face-tracker serve
 ```
+
+### 使用 OpenCV YuNet + Facemark 后端
+
+本地 CPU 运行、依赖更少的替代检测链路。首次使用会从 opencv_zoo 官方源下载 YuNet 检测器（约 230 KB）到 `models/`；Facemark LBF（约 54 MB）是可选升级，缺省时自动降级为 YuNet 自带的关键点。
+
+```bash
+FACE_TRACKER_BACKEND=yunet uv run face-tracker serve
+```
+
+`model` 字段会标记为 `opencv-yunet`。眼睛点优先来自 Facemark LBF 的 68 点模型（`eyes.source = facemark-lbf`）；若 LBF 模型缺失或加载失败，则退回 YuNet 检测器自带的眼睛关键点（`eyes.source = yunet-keypoints`）。两种来源都基于同一套眼中心/眼距几何计算输出 `viewer_position_m`。
+
+相关环境变量：
+
+| 变量 | 默认值 | 说明 |
+|---|---:|---|
+| `FACE_YUNET_MODEL_PATH` | `models/face_detection_yunet_2023mar.onnx` | YuNet 检测器文件 |
+| `FACE_LBF_MODEL_PATH` | `models/lbfmodel.yaml` | Facemark LBF 关键点模型（可选，失败不阻塞） |
 
 ## 项目结构
 
