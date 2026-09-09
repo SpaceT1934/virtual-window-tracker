@@ -86,7 +86,8 @@ export class TrackingSession {
 }
 
 export function physicalView(position: Position, neutral: Position, windowWidth: number,
-                             visibleWidthM: number, neutralDistanceM: number, invertX: boolean): Position {
+                             visibleWidthM: number, neutralDistanceM: number, invertX: boolean,
+                             minimumEyeDistanceM = 0.03): Position {
   // Physical width refers to the visible rendered rectangle, NOT the monitor diagonal.
   const unitsPerM = windowWidth / visibleWidthM;
   // The neutral sample is the measured eye-to-screen distance.  Map movement
@@ -98,6 +99,9 @@ export function physicalView(position: Position, neutral: Position, windowWidth:
   return {
     x: (position.x - neutral.x) * unitsPerM * (invertX ? -1 : 1),
     y: (position.y - neutral.y) * unitsPerM,
-    z: (neutralDistanceM + position.z - neutral.z) * unitsPerM,
+    // Keep the eye in front of the window.  The tracker is camera-space and
+    // can briefly overshoot during occlusion; clamping here prevents one bad
+    // sample from making the render loop throw while preserving real motion.
+    z: Math.max(minimumEyeDistanceM, neutralDistanceM + position.z - neutral.z) * unitsPerM,
   };
 }

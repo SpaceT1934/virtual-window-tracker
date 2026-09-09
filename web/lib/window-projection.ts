@@ -69,31 +69,31 @@ export function applyWindowProjection(camera: PerspectiveCamera, eye: Position,
   if (!Number.isFinite(requestedDistance) || requestedDistance <= 0) {
     throw new Error('Eye must be in front of the screen plane');
   }
-  // Keep the near plane in front of the screen while preserving the eye's
-  // tangential (x/y) position.  This keeps the actual camera and frustum in
-  // one coherent coordinate frame when a bad/very-close sample arrives.
-  const distance = Math.max(requestedDistance, near * 1.01);
-  const effectiveEye = requestedDistance < distance
-    ? requestedEye.clone().addScaledVector(normal, distance - requestedDistance)
-    : requestedEye;
+  // Do not move the measured eye to satisfy the near plane.  That creates a
+  // discontinuity exactly when the viewer gets close.  Instead shrink the
+  // clipping plane for this frame; the frustum remains in the measured eye's
+  // coordinate frame.  The lower bound avoids a zero near plane.
+  const distance = requestedDistance;
+  const nearPlane = Math.max(1e-4, Math.min(near, distance * 0.5));
+  const effectiveEye = requestedEye;
   const eyeToScreen = lowerLeft.clone().sub(effectiveEye);
   const planeDistance = distance;
-  const left = near * eyeToScreen.dot(right) / planeDistance;
-  const rightFrustum = near * lowerRight.clone().sub(effectiveEye).dot(right) / planeDistance;
-  const bottom = near * eyeToScreen.dot(up) / planeDistance;
-  const top = near * upperLeft.clone().sub(effectiveEye).dot(up) / planeDistance;
+  const left = nearPlane * eyeToScreen.dot(right) / planeDistance;
+  const rightFrustum = nearPlane * lowerRight.clone().sub(effectiveEye).dot(right) / planeDistance;
+  const bottom = nearPlane * eyeToScreen.dot(up) / planeDistance;
+  const top = nearPlane * upperLeft.clone().sub(effectiveEye).dot(up) / planeDistance;
 
   // Camera local +Z points towards the viewer, so local -Z looks through the
   // screen.  This basis also carries any physical screen roll into the view.
   const basis = new Matrix4().makeBasis(right, up, normal);
   camera.position.copy(effectiveEye);
   camera.quaternion.setFromRotationMatrix(basis);
-  camera.near = near;
+  camera.near = nearPlane;
   camera.far = far;
   camera.zoom = 1;
   camera.aspect = screenWidth / screenHeight;
-  camera.fov = 2 * Math.atan((top - bottom) / (2 * near)) * 180 / Math.PI;
-  camera.projectionMatrix.makePerspective(left, rightFrustum, top, bottom, near, far);
+  camera.fov = 2 * Math.atan((top - bottom) / (2 * nearPlane)) * 180 / Math.PI;
+  camera.projectionMatrix.makePerspective(left, rightFrustum, top, bottom, nearPlane, far);
   camera.projectionMatrixInverse.copy(camera.projectionMatrix).invert();
   camera.updateMatrixWorld();
   // fov/aspect agree with P00/P11 for downstream culling/LOD. Do not call

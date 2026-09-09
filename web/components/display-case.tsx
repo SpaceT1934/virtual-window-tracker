@@ -32,19 +32,12 @@ type TrackingPacket = {
 type DisplaySettings = {
   connectionUrl: string;
   view: {
-    physicalMode: boolean;
     visibleWidthM: number;
     neutralDistanceM: number;
-    eyeDistance: number;
+    minimumEyeDistanceM: number;
     near: number;
     far: number;
-    positionGain: number;
-    depthGain: number;
     invertX: boolean;
-    xLimit: number;
-    yLimit: number;
-    zMinimum: number;
-    zMaximum: number;
     mouseXGain: number;
     mouseYGain: number;
     smoothing: number;
@@ -52,6 +45,7 @@ type DisplaySettings = {
     reconnectMs: number;
   };
   case: {
+    visible: boolean;
     width: number;
     height: number;
     depth: number;
@@ -72,7 +66,6 @@ type DisplaySettings = {
     gaussianFlipY: boolean;
     x: number;
     y: number;
-    z: number;
     depthM: number;
     scale: number;
     bronzeColor: string;
@@ -124,19 +117,12 @@ type DisplaySettings = {
 const DEFAULT_SETTINGS: DisplaySettings = {
   connectionUrl: 'ws://127.0.0.1:8765/ws/v1/tracking',
   view: {
-    physicalMode: false,
     visibleWidthM: 0.53,
     neutralDistanceM: 0.6,
-    eyeDistance: 7.4,
+    minimumEyeDistanceM: 0.03,
     near: 0.1,
-    far: 50,
-    positionGain: 12.5,
-    depthGain: 10,
+    far: 200,
     invertX: true,
-    xLimit: 2.2,
-    yLimit: 1.35,
-    zMinimum: 5.2,
-    zMaximum: 10.5,
     mouseXGain: 0.82,
     mouseYGain: 0.48,
     smoothing: 28,
@@ -144,6 +130,7 @@ const DEFAULT_SETTINGS: DisplaySettings = {
     reconnectMs: 1500,
   },
   case: {
+    visible: true,
     width: 8,
     height: 4.5,
     depth: 5.8,
@@ -164,8 +151,7 @@ const DEFAULT_SETTINGS: DisplaySettings = {
     gaussianFlipY: false,
     x: 0,
     y: -0.18,
-    z: -1.85,
-    depthM: 0.12,
+    depthM: -0.12,
     scale: 1.08,
     bronzeColor: '#9e6738',
     darkBronzeColor: '#30241e',
@@ -227,14 +213,11 @@ const clamp = (value: number, minimum: number, maximum: number) =>
 
 const cloneSettings = () => structuredClone(DEFAULT_SETTINGS);
 const baselineDepth = (settings: DisplaySettings) =>
-  settings.view.physicalMode
-    ? settings.view.neutralDistanceM * settings.case.width / settings.view.visibleWidthM
-    : clamp(settings.view.eyeDistance, settings.view.zMinimum, settings.view.zMaximum);
+  settings.view.neutralDistanceM * settings.case.width / settings.view.visibleWidthM;
 
 /** Convert the model's depth to the same world units used by the screen plane. */
-const modelWorldZ = (settings: DisplaySettings) => settings.view.physicalMode
-  ? -settings.model.depthM * settings.case.width / settings.view.visibleWidthM
-  : settings.model.z;
+const modelWorldZ = (settings: DisplaySettings) =>
+  settings.model.depthM * settings.case.width / settings.view.visibleWidthM;
 
 function makeGrid(width: number, height: number, columns: number, rows: number, color: string, opacity: number) {
   const vertices: number[] = [];
@@ -266,6 +249,7 @@ function disposeObject(object: THREE.Object3D) {
 
 function createDisplayCase(settings: DisplaySettings) {
   const group = new THREE.Group();
+  group.visible = settings.case.visible;
   const { width, height, depth } = settings.case;
   const roomMaterial = new THREE.MeshStandardMaterial({
     color: settings.case.roomColor,
@@ -404,6 +388,7 @@ function applySceneSettings(handles: SceneHandles, settings: DisplaySettings) {
   fog.color.set(settings.case.fogColor);
   fog.near = settings.case.fogNear;
   fog.far = settings.case.fogFar;
+  handles.caseGroup.visible = settings.case.visible;
 
   artifact.position.set(settings.model.x, settings.model.y, modelWorldZ(settings));
   artifact.scale.setScalar(settings.model.scale);
@@ -534,28 +519,22 @@ function SettingsPanel({ settings, update, reset, onClose }: {
           {!validUrl && <p className="settings-error">请输入以 ws:// 或 wss:// 开头的地址。</p>}
         </Section>
         <Section title="视角与深度">
-          <label className="settings-toggle"><span>按实测尺寸投影</span><input type="checkbox" checked={settings.view.physicalMode} onChange={(event) => update((d) => { d.view.physicalMode = event.target.checked; })} /></label>
-          <p className="settings-hint">开启前测量画面区域宽度和眼睛到屏幕的距离（米）；全屏或调整窗口尺寸后请重新校准。</p>
+          <p className="settings-hint">统一使用真实尺寸窗口投影。请测量可见画面宽度和校准时眼睛到屏幕的距离（米）；全屏或调整窗口尺寸后请重新校准。</p>
           {number('画面区域实测宽度', settings.view.visibleWidthM, (value) => update((d) => { d.view.visibleWidthM = value; }), 0.1, 3, 0.01, ' m')}
           {number('校准时眼屏距离', settings.view.neutralDistanceM, (value) => update((d) => { d.view.neutralDistanceM = value; }), 0.2, 2, 0.01, ' m')}
-          {number('默认观察距离', settings.view.eyeDistance, (value) => update((d) => { d.view.eyeDistance = value; }), 1, 20, 0.1)}
+          {number('最小眼屏距离', settings.view.minimumEyeDistanceM, (value) => update((d) => { d.view.minimumEyeDistanceM = value; }), 0.01, 0.3, 0.01, ' m')}
           {number('相机近平面', settings.view.near, (value) => update((d) => { d.view.near = Math.min(value, d.view.far - 0.1); }), 0.02, 5, 0.01)}
-          {number('相机远平面', settings.view.far, (value) => update((d) => { d.view.far = Math.max(value, d.view.near + 0.1); }), 5, 100, 1)}
+          {number('相机远平面', settings.view.far, (value) => update((d) => { d.view.far = Math.max(value, d.view.near + 0.1); }), 5, 5000, 1)}
           {number('鼠标水平幅度', settings.view.mouseXGain, (value) => update((d) => { d.view.mouseXGain = value; }), 0, 4, 0.01)}
           {number('鼠标垂直幅度', settings.view.mouseYGain, (value) => update((d) => { d.view.mouseYGain = value; }), 0, 4, 0.01)}
           {number('跟随速度（越大越快）', settings.view.smoothing, (value) => update((d) => { d.view.smoothing = value; }), 1, 60, 1)}
         </Section>
         <Section title="跟踪响应">
-          <p className="settings-hint">实测模式使用统一物理比例；以下增益和偏移限制仅作用于演示模式。</p>
-          {number('水平跟随增益', settings.view.positionGain, (value) => update((d) => { d.view.positionGain = value; }), 0, 40, 0.1)}
-          {number('纵深跟随增益', settings.view.depthGain, (value) => update((d) => { d.view.depthGain = value; }), 0, 40, 0.1)}
-          {number('水平最大偏移', settings.view.xLimit, (value) => update((d) => { d.view.xLimit = value; }), 0.1, 8, 0.1)}
-          {number('垂直最大偏移', settings.view.yLimit, (value) => update((d) => { d.view.yLimit = value; }), 0.1, 8, 0.1)}
-          {number('观察距离最小值', settings.view.zMinimum, (value) => update((d) => { d.view.zMinimum = Math.min(value, d.view.zMaximum - 0.1); }), 0.5, 20, 0.1)}
-          {number('观察距离最大值', settings.view.zMaximum, (value) => update((d) => { d.view.zMaximum = Math.max(value, d.view.zMinimum + 0.1); }), 1, 30, 0.1)}
+          <p className="settings-hint">X、Y、Z 均使用同一米制比例；Z 为眼睛相对校准位置的真实前后移动。</p>
           <label className="settings-toggle"><span>反转摄像头水平移动</span><input type="checkbox" checked={settings.view.invertX} onChange={(event) => update((d) => { d.view.invertX = event.target.checked; })} /></label>
         </Section>
         <Section title="展示箱">
+          <label className="settings-toggle"><span>显示演示盒子（可选背景内容）</span><input type="checkbox" checked={settings.case.visible} onChange={(event) => update((d) => { d.case.visible = event.target.checked; })} /></label>
           {number('宽度', settings.case.width, (value) => update((d) => { d.case.width = value; }), 2, 20, 0.1)}
           {number('高度', settings.case.height, (value) => update((d) => { d.case.height = value; }), 2, 15, 0.1)}
           {number('深度', settings.case.depth, (value) => update((d) => { d.case.depth = value; }), 1, 20, 0.1)}
@@ -576,11 +555,10 @@ function SettingsPanel({ settings, update, reset, onClose }: {
           <label className="settings-toggle"><span>高斯坐标翻转（绕 X 轴 180°）</span><input type="checkbox" checked={settings.model.gaussianFlipY} onChange={(event) => update((d) => { d.model.gaussianFlipY = event.target.checked; })} /></label>
           <p className="settings-hint">扫描模型若上下颠倒可开启；高斯颜色包含拍摄时光照。</p>
           <p className="settings-hint">世界坐标中屏幕平面固定为 <strong>z = 0</strong>；屏幕后方为负，朝向观看者为正。观察点 z 是眼睛到屏幕的距离，不是模型 z。</p>
-          {number('模型 X', settings.model.x, (value) => update((d) => { d.model.x = value; }), -8, 8, 0.01)}
-          {number('模型 Y', settings.model.y, (value) => update((d) => { d.model.y = value; }), -6, 6, 0.01)}
-          {settings.view.physicalMode
-            ? number('屏幕后深度', settings.model.depthM, (value) => update((d) => { d.model.depthM = value; }), 0.01, 1.5, 0.01, ' m')
-            : number('模型 Z（场景单位）', settings.model.z, (value) => update((d) => { d.model.z = value; }), -12, 4.8, 0.01)}
+          {number('模型 X（场景单位）', settings.model.x, (value) => update((d) => { d.model.x = value; }), -8, 8, 0.01)}
+          {number('模型 Y（场景单位）', settings.model.y, (value) => update((d) => { d.model.y = value; }), -6, 6, 0.01)}
+          {number('相对窗口深度（米）', settings.model.depthM, (value) => update((d) => { d.model.depthM = value; }), -2, 2, 0.01, ' m')}
+          <p className="settings-hint">负值在窗口后方，正值向观看者凸出；窗口只是投影视口，不限制模型尺寸。</p>
           {number('统一缩放', settings.model.scale, (value) => update((d) => { d.model.scale = value; }), 0.1, 4, 0.01)}
           {number('金属度', settings.model.metalness, (value) => update((d) => { d.model.metalness = value; }), 0, 1, 0.01)}
           {number('粗糙度', settings.model.roughness, (value) => update((d) => { d.model.roughness = value; }), 0, 1, 0.01)}
@@ -676,11 +654,8 @@ export function DisplayCase() {
     const neutral = trackingSessionRef.current.neutral;
     const view = settings.view;
     if (faceEnabledRef.current && position && neutral) {
-      targetRef.current = {
-        x: clamp((position.x - neutral.x) * view.positionGain * (view.invertX ? -1 : 1), -view.xLimit, view.xLimit),
-        y: clamp((position.y - neutral.y) * view.positionGain, -view.yLimit, view.yLimit),
-        z: clamp(view.eyeDistance + (position.z - neutral.z) * view.depthGain, view.zMinimum, view.zMaximum),
-      };
+      targetRef.current = physicalView(position, neutral, settings.case.width,
+        view.visibleWidthM, view.neutralDistanceM, view.invertX, view.minimumEyeDistanceM);
     } else {
       const mouse = faceEnabledRef.current ? { x: 0, y: 0 } : mousePositionRef.current;
       targetRef.current = { x: mouse.x * view.mouseXGain, y: mouse.y * view.mouseYGain, z: baselineDepth(settings) };
@@ -691,10 +666,9 @@ export function DisplayCase() {
     setSettings((previous) => {
       const next = structuredClone(previous);
       mutate(next);
-      next.view.zMinimum = Math.min(next.view.zMinimum, next.view.zMaximum - 0.1);
-      next.view.eyeDistance = clamp(next.view.eyeDistance, next.view.zMinimum, next.view.zMaximum);
-      next.view.near = Math.min(next.view.near, next.view.zMinimum / 2);
-      next.view.far = Math.max(next.view.far, next.view.zMaximum + next.case.depth + 1);
+      next.view.minimumEyeDistanceM = clamp(next.view.minimumEyeDistanceM, 0.005, Math.max(0.005, next.view.neutralDistanceM));
+      next.view.near = Math.max(0.0001, Math.min(next.view.near, next.view.far - 0.1));
+      next.view.far = Math.max(next.view.far, next.case.depth + 5);
       return next;
     });
   }, []);
@@ -787,21 +761,15 @@ export function DisplayCase() {
           return;
         }
         latestPositionRef.current = position;
-        const horizontalDirection = currentSettings.view.invertX ? -1 : 1;
-        targetRef.current = currentSettings.view.physicalMode
-          ? physicalView(
-              position,
-              neutral,
-              currentSettings.case.width,
-              currentSettings.view.visibleWidthM,
-              currentSettings.view.neutralDistanceM,
-              currentSettings.view.invertX,
-            )
-          : {
-          x: clamp((position.x - neutral.x) * currentSettings.view.positionGain * horizontalDirection, -currentSettings.view.xLimit, currentSettings.view.xLimit),
-          y: clamp((position.y - neutral.y) * currentSettings.view.positionGain, -currentSettings.view.yLimit, currentSettings.view.yLimit),
-          z: clamp(currentSettings.view.eyeDistance + (position.z - neutral.z) * currentSettings.view.depthGain, currentSettings.view.zMinimum, currentSettings.view.zMaximum),
-        };
+        targetRef.current = physicalView(
+          position,
+          neutral,
+          currentSettings.case.width,
+          currentSettings.view.visibleWidthM,
+          currentSettings.view.neutralDistanceM,
+          currentSettings.view.invertX,
+          currentSettings.view.minimumEyeDistanceM,
+        );
         setTrackerState('tracking');
       };
       socket.onerror = () => socket?.close();

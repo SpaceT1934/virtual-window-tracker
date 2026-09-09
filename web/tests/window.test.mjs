@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { PerspectiveCamera, Vector3, Matrix4, Euler } from 'three';
 import { applyWindowProjection } from '../lib/window-projection.ts';
 import { TrackingSession, physicalView } from '../lib/window-tracking.ts';
+import { windowPlaneFromAnchor } from '../lib/window-anchor.ts';
 import { RenderBudget, renderPixelRatio } from '../lib/render-budget.ts';
 
 const packet = (sequence, position = { x: 0, y: 0, z: 0.6 }, track_id = 1) => ({
@@ -70,6 +71,14 @@ test('sheared screen bases are rejected instead of producing a twisted frustum',
     topLeft: { x: -3.8, y: 2.25, z: 0 },
   }), /perpendicular/);
 });
+test('window anchors produce a physical rectangle for scene content', () => {
+  const plane = windowPlaneFromAnchor({
+    center: new Vector3(2, 3, -4), right: new Vector3(1, 0, 0), up: new Vector3(0, 1, 0), width: 8, height: 4,
+  });
+  assert.deepEqual(plane.bottomLeft.toArray(), [-2, 1, -4]);
+  assert.deepEqual(plane.bottomRight.toArray(), [6, 1, -4]);
+  assert.deepEqual(plane.topLeft.toArray(), [-2, 5, -4]);
+});
 test('invalid frusta rejected', () => {
   assert.throws(() => applyWindowProjection(new PerspectiveCamera(), { x: NaN, y: 0, z: 1 }, 8, 4.5, 0.1, 50));
 });
@@ -131,6 +140,10 @@ test('physical mapping anchors neutral depth and preserves metric deltas', () =>
   assert.ok(Math.abs(moved.x + 1.6) < 1e-12);
   assert.ok(Math.abs(moved.y - .8) < 1e-12);
   assert.ok(Math.abs(moved.z - 11.2) < 1e-12);
+});
+test('physical mapping keeps an overshooting eye in front of the window', () => {
+  const p = physicalView({ x: 0, y: 0, z: 0.01 }, { x: 0, y: 0, z: 0.6 }, 8, .5, .6, false, .05);
+  assert.ok(Math.abs(p.z - .8) < 1e-12);
 });
 
 test('side-on face cannot set neutral but can be tracked after calibration', () => {
