@@ -223,10 +223,10 @@ function loadStoredSettings(): DisplaySettings {
     return {
       ...defaults,
       ...saved,
-      view: { ...defaults.view, ...(saved.view ?? {}) },
-      case: { ...defaults.case, ...(saved.case ?? {}) },
-      model: { ...defaults.model, ...(saved.model ?? {}) },
-      lighting: { ...defaults.lighting, ...(saved.lighting ?? {}) },
+      view: { ...defaults.view, ...saved.view },
+      case: { ...defaults.case, ...saved.case },
+      model: { ...defaults.model, ...saved.model },
+      lighting: { ...defaults.lighting, ...saved.lighting },
     };
   } catch {
     return cloneSettings();
@@ -508,7 +508,6 @@ function SettingsPanel({ settings, update, reset, onClose }: {
   onClose: () => void;
 }) {
   const [urlDraft, setUrlDraft] = useState(settings.connectionUrl);
-  useEffect(() => setUrlDraft(settings.connectionUrl), [settings.connectionUrl]);
   const validUrl = (() => {
     try {
       const protocol = new URL(urlDraft).protocol;
@@ -635,8 +634,7 @@ export function DisplayCase() {
   const latestPositionRef = useRef<ViewerPosition | null>(null);
   const modelDragRef = useRef({ x: 0, y: 0 });
   const metricsRef = useRef({ frames: 0, trackingFps: 0, receivedAt: 0 });
-  const [settings, setSettings] = useState<DisplaySettings>(() => cloneSettings());
-  const settingsHydratedRef = useRef(false);
+  const [settings, setSettings] = useState<DisplaySettings>(() => loadStoredSettings());
   const [isMoving, setIsMoving] = useState(false);
   const [faceEnabled, setFaceEnabled] = useState(true);
   const [trackerState, setTrackerState] = useState<TrackerState>('connecting');
@@ -647,14 +645,6 @@ export function DisplayCase() {
   const [metrics, setMetrics] = useState({ fps: 0, trackingFps: 0, age: null as number | null });
 
   useEffect(() => {
-    const stored = loadStoredSettings();
-    settingsHydratedRef.current = true;
-    settingsRef.current = stored;
-    setSettings(stored);
-  }, []);
-
-  useEffect(() => {
-    if (!settingsHydratedRef.current) return;
     try { window.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings)); } catch { /* storage may be disabled */ }
   }, [settings]);
 
@@ -978,7 +968,7 @@ export function DisplayCase() {
   }, []);
 
   const moveView = (event: React.PointerEvent<HTMLDivElement>) => {
-    if (faceEnabledRef.current || !draggingRef.current || !settingsRef.current.view.mouseDragEnabled) return;
+    if (!draggingRef.current || !settingsRef.current.view.mouseDragEnabled) return;
     const previous = modelDragRef.current;
     const dx = event.clientX - previous.x;
     const dy = event.clientY - previous.y;
@@ -992,7 +982,7 @@ export function DisplayCase() {
     setIsMoving(true);
   };
   const startView = (event: React.PointerEvent<HTMLDivElement>) => {
-    if (faceEnabledRef.current) return;
+    if (!settingsRef.current.view.mouseDragEnabled) return;
     draggingRef.current = true;
     modelDragRef.current = { x: event.clientX, y: event.clientY };
     event.currentTarget.setPointerCapture(event.pointerId);
@@ -1011,7 +1001,7 @@ export function DisplayCase() {
     else void element.requestFullscreen();
   };
 
-  const statusLabel = !faceEnabled && isMoving ? '鼠标旋转模型' : trackerLabels[trackerState];
+  const statusLabel = isMoving ? '鼠标旋转模型' : trackerLabels[trackerState];
   const statusColor = trackerState === 'tracking' ? 'bg-[#71c8a2]' : trackerState === 'offline' ? 'bg-[#e36f63]' : trackerState === 'lost' ? 'bg-[#e8a45e]' : 'bg-[#7fb3c8]';
   return (
     <section className="max-w-none" style={{ width: `min(100vw, ${100 * settings.case.width / settings.case.height}vh)` }}>
@@ -1038,7 +1028,8 @@ export function DisplayCase() {
           </output>}
           <div className="absolute bottom-4 left-4 right-4 z-40 flex items-end justify-end gap-3 sm:bottom-7 sm:left-8 sm:right-8" onPointerDown={(event) => event.stopPropagation()}><div className="flex gap-2">
             <Button type="button" variant="outline" size="sm" aria-pressed={showMetrics} onClick={() => setShowMetrics((value) => !value)} className="border-white/15 bg-black/35 text-white">性能</Button>
-            <Button type="button" variant="outline" size="icon-lg" aria-label={faceEnabled ? '面追关闭' : '面追开启'} title={faceEnabled ? '面追关闭' : '面追开启'} onClick={toggleTrackingMode} className={`border-white/15 text-white hover:bg-black/55 hover:text-white ${faceEnabled ? 'bg-[#6f9f91]/45' : 'bg-black/35'}`}>{faceEnabled ? <ScanFace /> : <MousePointer2 />}</Button>
+            <Button type="button" variant="outline" size="icon-lg" aria-label={faceEnabled ? '关闭面部追踪' : '开启面部追踪'} title={faceEnabled ? '面追：开启' : '面追：关闭'} onClick={toggleTrackingMode} className={`border-white/15 text-white hover:bg-black/55 hover:text-white ${faceEnabled ? 'bg-[#6f9f91]/45' : 'bg-black/35'}`}><ScanFace /></Button>
+            <Button type="button" variant="outline" size="icon-lg" aria-label={settings.view.mouseDragEnabled ? '关闭鼠标拖拽旋转' : '开启鼠标拖拽旋转'} title={settings.view.mouseDragEnabled ? '鼠标拖拽：开启' : '鼠标拖拽：关闭'} onClick={() => updateSettings((draft) => { draft.view.mouseDragEnabled = !draft.view.mouseDragEnabled; })} className={`border-white/15 text-white hover:bg-black/55 hover:text-white ${settings.view.mouseDragEnabled ? 'bg-[#6f9f91]/45' : 'bg-black/35'}`}><MousePointer2 /></Button>
             <Button type="button" variant="outline" size="icon-lg" aria-label={faceEnabled ? '重新校准中心' : '复位视角'} onClick={resetView} className="border-white/15 bg-black/35 text-white hover:bg-black/55 hover:text-white">{faceEnabled ? <LocateFixed /> : <RotateCcw />}</Button>
             <Button type="button" variant="outline" size="icon-lg" aria-label="打开显示设置" aria-expanded={settingsOpen} onClick={() => setSettingsOpen((current) => !current)} className={`border-white/15 text-white hover:bg-black/55 hover:text-white ${settingsOpen ? 'bg-[#6f9f91]/45' : 'bg-black/35'}`}><Settings2 /></Button>
             <Button type="button" variant="outline" size="icon-lg" aria-label="全屏查看" onClick={toggleFullscreen} className="border-white/15 bg-black/35 text-white hover:bg-black/55 hover:text-white"><Maximize2 /></Button>
