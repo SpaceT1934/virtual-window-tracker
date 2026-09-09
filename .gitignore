@@ -6,3 +6,12 @@ __pycache__/
 models/*.task
 models/*.tflite
 web/.npm-cache/
+
+# Local scraping and browser artifacts
+.firecrawl/
+web/outputs/
+
+# Frontend build and tooling caches
+web/.next/
+web/node_modules/
+web/tsconfig.tsbuildinfo
