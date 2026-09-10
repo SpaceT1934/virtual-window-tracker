@@ -89,7 +89,8 @@ export class TrackingSession {
 export function physicalView(position: Position, neutral: Position, windowWidth: number,
                              visibleWidthM: number, neutralDistanceM: number, invertX: boolean,
                              minimumEyeDistanceM = 0.03,
-                             cameraOffset: CameraOffset = { x: 0, y: 0, z: 0 }): Position {
+                             cameraOffset: CameraOffset = { x: 0, y: 0, z: 0 },
+                             responseScale = 1): Position {
   // Physical width refers to the visible rendered rectangle, NOT the monitor diagonal.
   const unitsPerM = windowWidth / visibleWidthM;
   // The tracker reports absolute camera-space metres. With parallel camera
@@ -100,11 +101,15 @@ export function physicalView(position: Position, neutral: Position, windowWidth:
   const neutralCameraDepthM = Math.max(1e-6, neutralDistanceM - cameraOffset.z);
   const metricScale = neutralCameraDepthM / Math.max(1e-6, neutral.z);
   return {
-    x: (position.x * metricScale * (invertX ? -1 : 1) + cameraOffset.x) * unitsPerM,
-    y: (position.y * metricScale + cameraOffset.y) * unitsPerM,
+    // X/Y are view offsets relative to the calibrated neutral eye. Without
+    // subtracting neutral.x/y, a non-centred camera calibration permanently
+    // shifts the eye away from the window center and makes head motion look
+    // like the whole scene/window is drifting.
+    x: ((position.x - neutral.x) * metricScale * (invertX ? -1 : 1) + cameraOffset.x) * unitsPerM * responseScale,
+    y: ((position.y - neutral.y) * metricScale + cameraOffset.y) * unitsPerM * responseScale,
     // Keep the eye in front of the window. The tracker is camera-space and
     // can briefly overshoot during occlusion; clamping here prevents one bad
     // sample from making the render loop throw while preserving real motion.
-    z: Math.max(minimumEyeDistanceM, position.z * metricScale + cameraOffset.z) * unitsPerM,
+    z: Math.max(minimumEyeDistanceM, position.z * metricScale + cameraOffset.z) * unitsPerM * responseScale,
   };
 }

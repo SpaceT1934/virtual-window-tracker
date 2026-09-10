@@ -149,6 +149,15 @@ test('physical mapping applies a parallel camera offset without changing scale',
   const p = physicalView({ x: 0, y: 0, z: .6 }, { x: 0, y: 0, z: .6 }, 8, .5, .6, false, .03, { x: .02, y: -.01, z: .04 });
   assert.deepEqual(p, { x: .32, y: -.16, z: 9.6 });
 });
+test('physical mapping centers the calibrated eye before applying motion offsets', () => {
+  const neutral = { x: 0.12, y: -0.08, z: .6 };
+  const centered = physicalView(neutral, neutral, 8, .5, .6, false);
+  assert.ok(Math.abs(centered.x) < 1e-12);
+  assert.ok(Math.abs(centered.y) < 1e-12);
+  const moved = physicalView({ x: 0.17, y: -0.03, z: .6 }, neutral, 8, .5, .6, false);
+  assert.ok(Math.abs(moved.x - 0.8) < 1e-12);
+  assert.ok(Math.abs(moved.y - 0.8) < 1e-12);
+});
 
 test('side-on face cannot set neutral but can be tracked after calibration', () => {
   const s = new TrackingSession();
