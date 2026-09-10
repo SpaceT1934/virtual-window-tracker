@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 
 import {
   DEFAULT_BACKEND_FOV_DEG,
@@ -37,11 +37,22 @@ export default function DebugPage() {
   const [packet, setPacket] = useState<Packet | null>(null);
   const [showAll, setShowAll] = useState(true);
   const [trueFov, setTrueFov] = useTrueFovDeg();
-  useEffect(() => { const ws = new WebSocket('ws://127.0.0.1:8765/ws/v1/tracking'); ws.onmessage = e => setPacket(JSON.parse(e.data) as Packet); return () => { ws.close(); }; }, []);
+  const handleMessage = useCallback((event: MessageEvent<string>) => {
+    setPacket(JSON.parse(event.data) as Packet);
+  }, []);
+  useEffect(() => {
+    const ws = new WebSocket('ws://127.0.0.1:8765/ws/v1/tracking');
+    ws.addEventListener('message', handleMessage);
+    return () => {
+      ws.removeEventListener('message', handleMessage);
+      ws.close();
+    };
+  }, [handleMessage]);
   const face = packet?.face;
   const points: DebugPoint[] = face?.debug_points ?? [];
   const visible = showAll ? points : points.filter(p => p.group === 'yunet');
-  const backendFov = Number.isFinite(packet?.camera_hfov_deg) ? packet.camera_hfov_deg : DEFAULT_BACKEND_FOV_DEG;
+  const packetCameraFov = packet?.camera_hfov_deg;
+  const backendFov = typeof packetCameraFov === 'number' && Number.isFinite(packetCameraFov) ? packetCameraFov : DEFAULT_BACKEND_FOV_DEG;
   const depthScale = depthScaleFor(backendFov, trueFov);
   const filtered = face?.viewer_position_m?.filtered ?? null;
   const corrected = filtered ? applyDepthScale(filtered, depthScale) : null;
