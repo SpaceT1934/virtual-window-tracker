@@ -44,3 +44,18 @@ def _download(model_path: Path, model_url: str) -> Path:
     temporary_path.replace(model_path)
     return model_path
 
+
+def ensure_optional_model(model_path: Path, model_url: str) -> Path | None:
+    """Resolve an optional model without making hand tracking break startup.
+
+    A missing model is returned as ``None`` so deployments can run the face
+    tracker alone; callers may then expose a clear capability status and let
+    clients fall back to the existing face stream.
+    """
+    if model_path.is_file() and model_path.stat().st_size > 0:
+        return model_path
+    try:
+        return ensure_model(model_path, model_url)
+    except Exception:
+        return None
+

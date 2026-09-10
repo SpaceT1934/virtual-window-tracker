@@ -1,6 +1,8 @@
 import { SparkRenderer, SplatMesh } from '@sparkjsdev/spark';
 import * as THREE from 'three';
 
+export type GaussianSource = File | string;
+
 /** Loaded only when requested; the regular mesh path never initializes Spark. */
 export function createGaussianLayer(renderer: THREE.WebGLRenderer, scene: THREE.Scene) {
   const spark = new SparkRenderer({ renderer, sortRadial: false, enableLod: false });
@@ -17,18 +19,29 @@ export function createGaussianLayer(renderer: THREE.WebGLRenderer, scene: THREE.
       spark.maxStdDev = Math.min(Math.sqrt(8), Math.max(2, sigma));
     },
     hide() { generation++; group.visible = false; },
-    async load(file?: File) {
+    async load(source?: GaussianSource) {
       const request = ++generation;
-      if (file && file.size > 128 * 1024 * 1024) throw new Error('当前入口限 128 MB；大型场景请先裁剪／压缩，后续再接入分块 LOD。');
-      const bytes = file ? await file.arrayBuffer() : undefined;
+      let bytes: ArrayBuffer | undefined;
+      let fileName: string | undefined;
+      if (typeof source === 'string') {
+        const response = await fetch(source);
+        if (!response.ok) throw new Error(`预生成点云加载失败（HTTP ${response.status}）。`);
+        bytes = await response.arrayBuffer();
+        fileName = source.split(/[\\/?#]/).pop() || 'scene.gaussian.ply';
+      } else if (source) {
+        if (source.size > 128 * 1024 * 1024) throw new Error('当前入口限 128 MB；大型场景请先裁剪／压缩，后续再接入分块 LOD。');
+        bytes = await source.arrayBuffer();
+        fileName = source.name;
+      }
+      if (bytes && bytes.byteLength > 128 * 1024 * 1024) throw new Error('当前入口限 128 MB；大型场景请先裁剪／压缩，后续再接入分块 LOD。');
       if (disposed || request !== generation) return null;
-      if (file?.name.toLowerCase().endsWith('.ply') && bytes) {
+      if (fileName?.toLowerCase().endsWith('.ply') && bytes) {
         const header = new TextDecoder().decode(bytes.slice(0, 2048));
         if (!/format binary_little_endian 1\.0/.test(header)) {
           throw new Error('PLY 需为二进制小端高斯格式；请从训练工具或 SuperSplat 重新导出。');
         }
       }
-      const mesh = new SplatMesh(file ? { fileBytes: bytes, fileName: file.name, lod: false } : {
+      const mesh = new SplatMesh(bytes ? { fileBytes: bytes, fileName, lod: false } : {
         constructSplats(splats) {
           const center = new THREE.Vector3();
           const scales = new THREE.Vector3(0.05, 0.025, 0.02);
@@ -63,7 +76,7 @@ export function createGaussianLayer(renderer: THREE.WebGLRenderer, scene: THREE.
         active = mesh;
         group.add(mesh);
         group.visible = true;
-        return file?.name ?? '高斯算法测试环（4,096 个高斯，不是扫描模型）';
+        return fileName ?? '高斯算法测试环（4,096 个高斯，不是扫描模型）';
       } catch (error) {
         mesh.dispose();
         throw error;

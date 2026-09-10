@@ -8,6 +8,7 @@
 
 - Python 人脸位置服务：读取摄像头，检测人脸和双眼，输出经过平滑的位置数据。
 - Three.js 展示箱：订阅位置数据，使用离轴投影渲染固定在屏幕后方的三维场景。
+- 可选 MediaPipe Hand Landmarker：输出 21 点、掌心/掌面旋转和带滞回的单手 pinch 手势。
 
 ## 架构
 
@@ -165,9 +166,32 @@ npm run dev
 | `GET http://127.0.0.1:8765/api/v1/status` | 摄像头服务状态与错误信息 |
 | `GET http://127.0.0.1:8765/api/v1/tracking/latest` | 最近一次追踪结果 |
 | `WS ws://127.0.0.1:8765/ws/v1/tracking` | 实时位置数据 |
+| `GET http://127.0.0.1:8765/api/v1/hand/latest` | 最近一次手部特征 |
+| `WS ws://127.0.0.1:8765/ws/v1/hand-tracking` | 手部特征实时数据 |
 | `http://127.0.0.1:8765/docs` | FastAPI 生成的接口文档 |
 
 WebSocket 只在产生新结果时发送数据，`sequence` 可用于判断是否收到重复帧。
+
+### 单手 pinch 交互
+
+服务启动时会按需下载 MediaPipe Hand Landmarker 模型到
+`models/hand_landmarker.task`（可用 `HAND_MODEL_PATH` 指定路径、`HAND_MODEL_URL`
+指定下载地址）。手部数据也会
+作为 `face_tracking` 包的 `hand` 字段发送；只需要手势的客户端可连接
+`/ws/v1/hand-tracking`。前端在 pinch 持续成立时用掌心位置拖动模型，并用掌面
+roll 旋转模型；检测丢失或释放 pinch 会清除手势目标并平滑回到模型基准姿态。
+
+可调参数包括 `HAND_TRACKING_ENABLED`、`HAND_PINCH_THRESHOLD`、
+`HAND_PINCH_RELEASE_THRESHOLD`、`HAND_PINCH_ON_FRAMES` 和
+`HAND_PINCH_OFF_FRAMES`。阈值使用拇指尖到食指尖距离相对掌长的比例，开启/释放
+采用不同阈值和连续帧数，减少抖动误触发。
+
+手部 21 个关键点在服务端进入输出前还会经过速度自适应 One Euro 滤波；掌心、
+掌面方向、旋转和 pinch 距离都从同一份已滤波几何重新计算。每个 MediaPipe
+handedness 标签拥有独立状态，双手在检测结果中的顺序变化不会交换滤波历史。
+时间戳倒退、无效帧、丢失或重新获取会清空历史，避免把旧手的位置带到新手上。
+默认参数适合约 30 FPS 的低延迟交互；可以用 `HAND_FILTER_*` 环境变量调节，
+并在启动服务前生效。
 
 ### 数据示例
 
@@ -244,6 +268,21 @@ WebSocket 只在产生新结果时发送数据，`sequence` 可用于判断是�
 | `FACE_FILTER_MIN_CUTOFF` | `1.2` | 静止时的平滑强度 |
 | `FACE_FILTER_BETA` | `0.035` | 运动时的跟随速度 |
 | `FACE_FILTER_DERIVATIVE_CUTOFF` | `1.0` | 速度估计的平滑强度 |
+| `HAND_TRACKING_ENABLED` | `true` | 是否初始化双手 Hand Landmarker |
+| `HAND_MODEL_PATH` | `models/hand_landmarker.task` | 手部模型文件位置 |
+| `HAND_MODEL_URL` | MediaPipe 官方地址 | 手部模型不存在时的下载地址 |
+| `HAND_MIN_DETECTION_CONFIDENCE` | `0.55` | 手部检测置信度阈值 |
+| `HAND_MIN_PRESENCE_CONFIDENCE` | `0.55` | 手部存在置信度阈值 |
+| `HAND_MIN_TRACKING_CONFIDENCE` | `0.55` | 手部跟踪置信度阈值 |
+| `HAND_PINCH_THRESHOLD` | `0.42` | pinch 开启的掌长比例阈值 |
+| `HAND_PINCH_RELEASE_THRESHOLD` | `0.52` | pinch 释放的掌长比例阈值 |
+| `HAND_PINCH_ON_FRAMES` | `2` | 连续多少帧确认 pinch 开启 |
+| `HAND_PINCH_OFF_FRAMES` | `3` | 连续多少帧确认 pinch 释放 |
+| `HAND_FILTER_ENABLED` | `true` | 是否启用服务端手部 One Euro 滤波 |
+| `HAND_FILTER_MIN_CUTOFF` | `1.2` | 静止时的基础截止频率，越低越平滑 |
+| `HAND_FILTER_BETA` | `4.0` | 速度自适应增益，越高越快跟随运动 |
+| `HAND_FILTER_DERIVATIVE_CUTOFF` | `1.0` | 速度估计的平滑截止频率 |
+| `HAND_FILTER_MAX_GAP_MS` | `350` | 超过此帧间隔就重置该手的滤波状态 |
 
 ### 网页展示设置
 

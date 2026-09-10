@@ -9,6 +9,7 @@ from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from .config import Settings
+from .hand_tracker import HandTracker
 from .service import TrackingService
 
 
@@ -76,6 +77,37 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             }
         return packet
 
+    @app.get("/api/v1/hand/latest")
+    def hand_latest() -> dict:
+        packet = tracking_service.latest()
+        if packet is None:
+            lost = HandTracker.lost("no_frame")
+            return {
+                "protocol_version": "1.0",
+                "type": "hand_tracking",
+                "tracking": False,
+                "hand": lost,
+                "hands": [],
+            }
+        hand = packet.get("hand")
+        if not isinstance(hand, dict) or not hand:
+            hand = HandTracker.lost("hand_tracker_unavailable")
+        hands = packet.get("hands")
+        if not isinstance(hands, list):
+            hands = hand.get("hands") if isinstance(hand.get("hands"), list) else []
+        if not hands and hand.get("tracking") is True:
+            hands = [hand]
+        return {
+            "protocol_version": packet.get("protocol_version", "1.0"),
+            "type": "hand_tracking",
+            "sequence": packet.get("sequence"),
+            "captured_at_unix_ms": packet.get("captured_at_unix_ms"),
+            "frame": packet.get("frame"),
+            "tracking": bool(hand.get("tracking")),
+            "hand": hand,
+            "hands": hands,
+        }
+
     @app.websocket("/ws/v1/tracking")
     async def tracking_socket(websocket: WebSocket) -> None:
         await websocket.accept()
@@ -86,6 +118,40 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 if packet is not None and packet["sequence"] != last_sequence:
                     await websocket.send_json(packet)
                     last_sequence = packet["sequence"]
+                await asyncio.sleep(1 / 120)
+        except WebSocketDisconnect:
+            pass
+
+    @app.websocket("/ws/v1/hand-tracking")
+    async def hand_tracking_socket(websocket: WebSocket) -> None:
+        """Stream only the hand feature envelope for lightweight clients."""
+        await websocket.accept()
+        last_sequence = -1
+        try:
+            while True:
+                packet = tracking_service.latest()
+                if packet is not None and packet.get("sequence") != last_sequence:
+                    hand = packet.get("hand")
+                    if not isinstance(hand, dict) or not hand:
+                        hand = HandTracker.lost("hand_tracker_unavailable")
+                    hands = packet.get("hands")
+                    if not isinstance(hands, list):
+                        hands = hand.get("hands") if isinstance(hand.get("hands"), list) else []
+                    if not hands and hand.get("tracking") is True:
+                        hands = [hand]
+                    await websocket.send_json({
+                        "protocol_version": packet.get("protocol_version", "1.0"),
+                        "type": "hand_tracking",
+                        "sequence": packet.get("sequence"),
+                        "captured_at_unix_ms": packet.get("captured_at_unix_ms"),
+                        "frame": packet.get("frame"),
+                        "tracking": bool(hand.get("tracking")),
+                        "hand": hand,
+                        "hands": hands,
+                    })
+                    sequence = packet.get("sequence")
+                    if isinstance(sequence, int):
+                        last_sequence = sequence
                 await asyncio.sleep(1 / 120)
         except WebSocketDisconnect:
             pass

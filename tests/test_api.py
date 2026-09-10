@@ -8,10 +8,22 @@ def test_versioned_api_routes_are_exposed() -> None:
     assert "/api/v1/status" in routes
     assert "/api/v1/tracking/latest" in routes
     assert "/ws/v1/tracking" in routes
+    assert "/api/v1/hand/latest" in routes
+    assert "/ws/v1/hand-tracking" in routes
 
 
 def test_openapi_metadata() -> None:
     schema = create_app(Settings()).openapi()
     assert schema["info"]["title"] == "Face Window Tracker"
     assert schema["info"]["version"] == "0.1.0"
+
+
+def test_hand_latest_without_frame_returns_explicit_loss_payload() -> None:
+    app = create_app(Settings())
+    route = next(route for route in app.routes if route.path == "/api/v1/hand/latest")
+    payload = route.endpoint()
+    assert payload["type"] == "hand_tracking"
+    assert payload["tracking"] is False
+    assert payload["hand"]["tracking_lost"] is True
+    assert payload["hand"]["quality_reason"] == "no_frame"
 
