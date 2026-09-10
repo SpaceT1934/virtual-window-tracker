@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { PerspectiveCamera, Vector3, Matrix4, Euler } from 'three';
 import { applyWindowProjection } from '../lib/window-projection.ts';
-import { TrackingSession, physicalView } from '../lib/window-tracking.ts';
+import { TrackingSession, physicalView, MAX_TRACKING_DEPTH_M } from '../lib/window-tracking.ts';
 import { windowPlaneFromAnchor } from '../lib/window-anchor.ts';
 import { RenderBudget, renderPixelRatio } from '../lib/render-budget.ts';
 
@@ -115,6 +115,17 @@ test('silent/frozen connection expires and duplicate sequences cannot keep it al
 test('invalid positions do not reach the camera', () => {
   const s = calibrated();
   [NaN, Infinity, -1, 0, 20].forEach((z, i) => assert.equal(s.accept(packet(20 + i, { x: 0, y: 0, z }), 400 + i), null));
+});
+test('far positions are tracked instead of being discarded as "no face"', () => {
+  // The old cap was z <= 3 m and a rejected sample never refreshed
+  // lastValidAt, so the render page showed "waiting for a face" while the
+  // tracker was still reporting a good position (wide-angle cameras inflate z).
+  const s = calibrated();
+  const far = { x: 0.1, y: 0, z: 4.2 };
+  assert.deepEqual(s.accept(packet(40, far), 500), far);
+  assert.equal(s.stale(600, 700).lost, false);
+  assert.deepEqual(s.accept(packet(41, { x: 0, y: 0, z: MAX_TRACKING_DEPTH_M }), 534), { x: 0, y: 0, z: MAX_TRACKING_DEPTH_M });
+  assert.equal(s.accept(packet(42, { x: 0, y: 0, z: 0.01 }), 568), null);
 });
 test('new identity and reconnection require a new calibration', () => {
   const s = calibrated();

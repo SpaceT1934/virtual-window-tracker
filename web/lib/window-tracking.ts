@@ -1,10 +1,35 @@
 export type Position = { x: number; y: number; z: number };
 export type CameraOffset = Position;
 
-export function isPosition(value: unknown): value is Position {
+/**
+ * Plausible eye-to-camera depth in metres for a monocular face tracker.
+ *
+ * These bounds only exist to discard garbage (NaN, negative or absurd depth).
+ * They must stay generous, because a rejected sample never updates
+ * `lastValidAt`: with an over-tight cap the tracker is healthy while the UI
+ * reports "no face yet".
+ *
+ * Depth comes from the configured horizontal FOV (`z = fx * assumed_ipd /
+ * eye_pixels`), so a wide-angle camera left on a narrower FOV inflates z by
+ * 2-3x and used to reach the old 3 m cap at an actual distance of ~1.5 m.
+ * Bounds are also exposed as parameters so callers can tune them per camera
+ * without rewriting this predicate.
+ */
+export const MIN_TRACKING_DEPTH_M = 0.05;
+export const MAX_TRACKING_DEPTH_M = 10;
+
+export function isPosition(
+  value: unknown,
+  minimumDepthM: number = MIN_TRACKING_DEPTH_M,
+  maximumDepthM: number = MAX_TRACKING_DEPTH_M,
+): value is Position {
   if (!value || typeof value !== 'object') return false;
   const p = value as Position;
-  return [p.x, p.y, p.z].every(Number.isFinite) && p.z >= 0.15 && p.z <= 3;
+  return (
+    [p.x, p.y, p.z].every(Number.isFinite) &&
+    p.z >= minimumDepthM &&
+    p.z <= maximumDepthM
+  );
 }
 
 /** One timer based on the LAST VALID sample, not one restarted by every lost packet. */
