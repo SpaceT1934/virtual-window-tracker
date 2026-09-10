@@ -27,6 +27,7 @@ import { RenderBudget, renderPixelRatio } from '@/lib/render-budget';
 import { WindowMotion } from '@/lib/window-motion';
 import { applyWindowProjection } from '@/lib/window-projection';
 import { TrackingSession, physicalView } from '@/lib/window-tracking';
+import { windowPlaneFromAnchor } from '@/lib/window-anchor';
 
 type ViewPosition = { x: number; y: number; z: number };
 type ViewerPosition = { x: number; y: number; z: number };
@@ -38,7 +39,24 @@ type TrackingPacket = {
   face?: { viewer_position_m?: { filtered?: ViewerPosition } | null } | null;
 };
 
+type WindowSettings = {
+  enabled: boolean;
+  lockAspect: boolean;
+  x: number;
+  y: number;
+  z: number;
+  rotationX: number;
+  rotationY: number;
+  rotationZ: number;
+  width: number;
+  height: number;
+  scale: number;
+  trackingScale: number;
+};
+type PresentationMode = 'model' | 'window';
+
 type DisplaySettings = {
+  presentationMode: PresentationMode;
   connectionUrl: string;
   view: {
     visibleWidthM: number;
@@ -86,6 +104,7 @@ type DisplaySettings = {
     metalness: number;
     roughness: number;
   };
+  window: WindowSettings;
   lighting: {
     autoResolution: boolean;
     maxRenderMegapixels: number;
@@ -124,6 +143,7 @@ type DisplaySettings = {
 };
 
 const DEFAULT_SETTINGS: DisplaySettings = {
+  presentationMode: 'model',
   connectionUrl: 'ws://127.0.0.1:8765/ws/v1/tracking',
   view: {
     visibleWidthM: 0.30,
@@ -170,6 +190,23 @@ const DEFAULT_SETTINGS: DisplaySettings = {
     plinthColor: '#101415',
     metalness: 0.78,
     roughness: 0.28,
+  },
+  window: {
+    enabled: false,
+    lockAspect: true,
+    x: 0,
+    y: 0,
+    z: 0,
+    rotationX: 0,
+    rotationY: 0,
+    rotationZ: 0,
+    width: 8,
+    height: 4.5,
+    scale: 1,
+    // GLB files commonly use scene units larger than metres. Keep tracking
+    // motion conservative by default; users can raise this after matching the
+    // window width to the asset's authored units.
+    trackingScale: 0.35,
   },
   lighting: {
     autoResolution: false,
@@ -229,12 +266,15 @@ function loadStoredSettings(): DisplaySettings {
     if (!raw) return cloneSettings();
     const saved = JSON.parse(raw) as Partial<DisplaySettings>;
     const defaults = cloneSettings();
+    const presentationMode = saved.presentationMode ?? (saved.window?.enabled ? 'window' : 'model');
     return {
       ...defaults,
       ...saved,
+      presentationMode,
       view: { ...defaults.view, ...saved.view },
       case: { ...defaults.case, ...saved.case },
       model: { ...defaults.model, ...saved.model },
+      window: { ...defaults.window, ...saved.window },
       lighting: { ...defaults.lighting, ...saved.lighting },
     };
   } catch {
@@ -243,10 +283,52 @@ function loadStoredSettings(): DisplaySettings {
 }
 const baselineDepth = (settings: DisplaySettings) =>
   settings.view.neutralDistanceM * settings.case.width / settings.view.visibleWidthM;
+const baselineDepthForWindow = (settings: DisplaySettings) =>
+  settings.view.neutralDistanceM * (settings.presentationMode === 'window' ? settings.window.width * settings.window.scale : settings.case.width) / settings.view.visibleWidthM * (settings.presentationMode === 'window' ? settings.window.trackingScale : 1);
 
 /** Convert the model's depth to the same world units used by the screen plane. */
 const modelWorldZ = (settings: DisplaySettings) =>
   settings.model.depthM * settings.case.width / settings.view.visibleWidthM;
+
+function windowFrame(settings: DisplaySettings) {
+  const w = settings.window;
+  const center = new THREE.Vector3(w.x, w.y, w.z);
+  // FPS orientation: yaw around world Y and pitch around the camera-local X
+  // axis. Build an orthonormal basis directly instead of composing XYZ
+  // Euler rotations, which can introduce an unintended roll around Z.
+  const yaw = w.rotationY;
+  const pitch = clamp(w.rotationX, -Math.PI / 2 + 0.02, Math.PI / 2 - 0.02);
+  const cosYaw = Math.cos(yaw);
+  const sinYaw = Math.sin(yaw);
+  const cosPitch = Math.cos(pitch);
+  const sinPitch = Math.sin(pitch);
+  const right = new THREE.Vector3(cosYaw, 0, sinYaw);
+  const up = new THREE.Vector3(sinYaw * sinPitch, cosPitch, -cosYaw * sinPitch);
+  const width = Math.max(0.1, w.width * w.scale);
+  const height = Math.max(0.1, (w.lockAspect ? w.width * settings.case.height / settings.case.width : w.height) * w.scale);
+  return { center, right, up, width, height };
+}
+
+function presentationFrame(settings: DisplaySettings) {
+  if (settings.presentationMode === 'window') return windowFrame(settings);
+  return {
+    center: new THREE.Vector3(0, 0, 0),
+    right: new THREE.Vector3(1, 0, 0),
+    up: new THREE.Vector3(0, 1, 0),
+    width: settings.case.width,
+    height: settings.case.height,
+  };
+}
+
+function placeWindowInFrontOfEye(settings: DisplaySettings, eye: THREE.Vector3) {
+  const frame = windowFrame(settings);
+  const normal = frame.right.clone().cross(frame.up).normalize();
+  const distance = baselineDepthForWindow(settings);
+  const center = eye.clone().addScaledVector(normal, -distance);
+  settings.window.x = center.x;
+  settings.window.y = center.y;
+  settings.window.z = center.z;
+}
 
 function makeGrid(width: number, height: number, columns: number, rows: number, color: string, opacity: number) {
   const vertices: number[] = [];
@@ -412,9 +494,11 @@ type SceneHandles = {
 
 function applySceneSettings(handles: SceneHandles, settings: DisplaySettings) {
   const { scene, artifact, hemisphere, key, rim, fill } = handles;
-  scene.background = new THREE.Color(settings.case.visible ? settings.case.backgroundColor : settings.case.skyColor);
-  handles.caseGroup.visible = settings.case.visible;
-
+  const showCase = settings.case.visible && settings.presentationMode === 'model';
+  scene.background = new THREE.Color(showCase ? settings.case.backgroundColor : settings.case.skyColor);
+  // Window mode is a view into the uploaded world. The showcase box is a
+  // separate presentation environment and must not appear around that view.
+  handles.caseGroup.visible = showCase;
   artifact.position.set(settings.model.x, settings.model.y, modelWorldZ(settings));
   artifact.scale.setScalar(settings.model.scale);
   const { bronze, darkBronze, plinthTopMaterial, plinthMaterial } = artifact.userData.materials as {
@@ -497,8 +581,8 @@ function ColorControl({ label, value, onChange }: { label: string; value: string
 }
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
-  const [open, setOpen] = useState(title === '模型' || title === '视角与深度' || title === '跟踪响应');
-  const order = title === '视角与深度' ? 'view' : title === '模型' ? 'model' : title === '跟踪响应' ? 'tracking' : title === '展示箱' ? 'case' : title === '连接' ? 'connection' : 'advanced';
+  const [open, setOpen] = useState(title === '模型' || title === '视角与深度' || title === '跟踪响应' || title === '虚拟窗户');
+  const order = title === '视角与深度' ? 'view' : title === '模型' ? 'model' : title === '虚拟窗户' ? 'window' : title === '跟踪响应' ? 'tracking' : title === '展示箱' ? 'case' : title === '连接' ? 'connection' : 'advanced';
   return (
     <section className={`settings-section settings-section-${order}`}>
       <button type="button" className="settings-section-heading" onClick={() => setOpen((current) => !current)} aria-expanded={open}>
@@ -510,13 +594,15 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   );
 }
 
-function SettingsPanel({ settings, update, reset, onClose, backendFovDeg }: {
+function SettingsPanel({ settings, update, reset, onClose, backendFovDeg, onModeChange }: {
   settings: DisplaySettings;
   update: (mutate: (draft: DisplaySettings) => void) => void;
   reset: () => void;
   onClose: () => void;
   backendFovDeg: number;
+  onModeChange: (mode: PresentationMode) => void;
 }) {
+  const isWindowMode = settings.presentationMode === 'window';
   const [urlDraft, setUrlDraft] = useState(settings.connectionUrl);
   const [trueFov, setTrueFov] = useTrueFovDeg();
   const depthScale = depthScaleFor(backendFovDeg, trueFov);
@@ -537,9 +623,13 @@ function SettingsPanel({ settings, update, reset, onClose, backendFovDeg }: {
   return (
     <aside className="settings-panel" onPointerDown={(event) => event.stopPropagation()} onPointerMove={(event) => event.stopPropagation()}>
       <header className="settings-panel-header">
-        <div><p>虚拟窗口</p><h2>显示设置</h2></div>
+        <div><p>虚拟窗口</p><h2>{isWindowMode ? '窗户模式设置' : '模型展示设置'}</h2></div>
         <Button type="button" size="icon-sm" variant="ghost" aria-label="关闭显示设置" onClick={onClose}><ChevronDown /></Button>
       </header>
+      <div className="settings-mode-tabs" role="tablist" aria-label="显示模式">
+        <button type="button" role="tab" aria-selected={!isWindowMode} className={!isWindowMode ? 'active' : ''} onClick={() => onModeChange('model')}>模型展示</button>
+        <button type="button" role="tab" aria-selected={isWindowMode} className={isWindowMode ? 'active' : ''} onClick={() => onModeChange('window')}>窗户模式</button>
+      </div>
       <p className="settings-intro">更改即时生效，并保存在此浏览器；恢复默认会回到原始参数。</p>
       <div className="settings-scroll">
         <Section title="连接">
@@ -571,7 +661,7 @@ function SettingsPanel({ settings, update, reset, onClose, backendFovDeg }: {
             {trueFov !== null && <span className="text-amber-300">修正已生效</span>}
           </div>
           <label className="settings-toggle"><span>反转摄像头水平移动</span><input type="checkbox" checked={settings.view.invertX} onChange={(event) => update((d) => { d.view.invertX = event.target.checked; })} /></label>
-          <label className="settings-toggle"><span>鼠标拖拽旋转模型</span><input type="checkbox" checked={settings.view.mouseDragEnabled} onChange={(event) => update((d) => { d.view.mouseDragEnabled = event.target.checked; })} /></label>
+          <label className="settings-toggle"><span>鼠标拖拽旋转模型</span><input type="checkbox" disabled={isWindowMode} checked={isWindowMode ? false : settings.view.mouseDragEnabled} onChange={(event) => update((d) => { d.view.mouseDragEnabled = event.target.checked; })} /></label>
         </Section>
         <Section title="展示箱">
           <label className="settings-toggle"><span>显示演示盒子（可选背景内容）</span><input type="checkbox" checked={settings.case.visible} onChange={(event) => update((d) => { d.case.visible = event.target.checked; })} /></label>
@@ -589,7 +679,7 @@ function SettingsPanel({ settings, update, reset, onClose, backendFovDeg }: {
           {color('场景背景', settings.case.backgroundColor, (value) => update((d) => { d.case.backgroundColor = value; }))}
           {color('无盒子时天空色', settings.case.skyColor, (value) => update((d) => { d.case.skyColor = value; }))}
         </Section>
-        <Section title="模型">
+        {!isWindowMode && <Section title="模型">
           <p className="settings-hint">世界坐标中屏幕平面固定为 <strong>z = 0</strong>；屏幕后方为负，朝向观看者为正。观察点 z 是眼睛到屏幕的距离，不是模型 z。</p>
           {number('模型 X（场景单位）', settings.model.x, (value) => update((d) => { d.model.x = value; }), -8, 8, 0.01)}
           {number('模型 Y（场景单位）', settings.model.y, (value) => update((d) => { d.model.y = value; }), -6, 6, 0.01)}
@@ -599,7 +689,21 @@ function SettingsPanel({ settings, update, reset, onClose, backendFovDeg }: {
           {number('模型旋转 Z', settings.model.rotationZ, (value) => update((d) => { d.model.rotationZ = value; }), -Math.PI, Math.PI, 0.01, ' rad')}
           <p className="settings-hint">负值在窗口后方，正值向观看者凸出；窗口只是投影视口，不限制模型尺寸。</p>
           {number('统一缩放', settings.model.scale, (value) => update((d) => { d.model.scale = value; }), 0.1, 4, 0.01)}
-        </Section>
+        </Section>}
+        {isWindowMode && <Section title="虚拟窗户">
+          <p className="settings-hint">窗户是独立的浮空投影视口，不需要存在于 GLB 网格中。飞行到目标位置后确认，或直接编辑数值。</p>
+          <p className="settings-hint">当前已启用窗户投影。窗口本身是独立的世界坐标平面，GLB 场景保持固定。</p>
+          <label className="settings-toggle"><span>锁定屏幕宽高比</span><input type="checkbox" checked={settings.window.lockAspect} onChange={(event) => update((d) => { d.window.lockAspect = event.target.checked; })} /></label>
+          {number('窗户 X', settings.window.x, (value) => update((d) => { d.window.x = value; }), -50, 50, 0.01)}
+          {number('窗户 Y', settings.window.y, (value) => update((d) => { d.window.y = value; }), -50, 50, 0.01)}
+          {number('窗户 Z', settings.window.z, (value) => update((d) => { d.window.z = value; }), -50, 50, 0.01)}
+          {number('旋转 X', settings.window.rotationX, (value) => update((d) => { d.window.rotationX = value; }), -Math.PI, Math.PI, 0.01, ' rad')}
+          {number('旋转 Y', settings.window.rotationY, (value) => update((d) => { d.window.rotationY = value; }), -Math.PI, Math.PI, 0.01, ' rad')}
+          {number('窗户宽度', settings.window.width, (value) => update((d) => { d.window.width = value; }), 0.5, 50, 0.1)}
+          {!settings.window.lockAspect && number('窗户高度', settings.window.height, (value) => update((d) => { d.window.height = value; }), 0.5, 50, 0.1)}
+          {number('统一缩放', settings.window.scale, (value) => update((d) => { d.window.scale = value; }), 0.1, 10, 0.01)}
+          {number('头部移动响应', settings.window.trackingScale, (value) => update((d) => { d.window.trackingScale = value; }), 0.05, 2, 0.01)}
+        </Section>}
         <Section title="高级外观与灯光">
           <label className="settings-toggle"><span>卡顿时自动降低分辨率</span><input type="checkbox" checked={settings.lighting.autoResolution} onChange={(event) => update((d) => { d.lighting.autoResolution = event.target.checked; })} /></label>
           {number('渲染像素预算', settings.lighting.maxRenderMegapixels, (value) => update((d) => { d.lighting.maxRenderMegapixels = value; }), 0.5, 16, 0.1, ' MP')}
@@ -655,13 +759,24 @@ export function DisplayCase() {
   const backendFovRef = useRef(DEFAULT_BACKEND_FOV_DEG);
   const latestPositionRef = useRef<ViewerPosition | null>(null);
   const modelDragRef = useRef({ x: 0, y: 0 });
+  const windowModeRef = useRef<'display' | 'flight'>('display');
+  const windowBackupRef = useRef<WindowSettings | null>(null);
+  const flightEyeRef = useRef(new THREE.Vector3(0, 0, baselineDepth(DEFAULT_SETTINGS)));
+  const flightKeysRef = useRef(new Set<string>());
+  const flightSyncFrameRef = useRef(0);
   const metricsRef = useRef({ frames: 0, trackingFps: 0, receivedAt: 0 });
-  const [settings, setSettings] = useState<DisplaySettings>(() => loadStoredSettings());
+  // Keep the first render deterministic for SSR/hydration. Browser storage is
+  // loaded after mount so a saved mode cannot change the server-rendered tree.
+  const [settings, setSettings] = useState<DisplaySettings>(() => cloneSettings());
+  const [settingsReady, setSettingsReady] = useState(false);
   const [isMoving, setIsMoving] = useState(false);
   const [faceEnabled, setFaceEnabled] = useState(true);
   const [trackerState, setTrackerState] = useState<TrackerState>('connecting');
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [showMetrics, setShowMetrics] = useState(false);
+  const [windowMode, setWindowMode] = useState<'display' | 'flight'>('display');
+
+  useEffect(() => { windowModeRef.current = windowMode; }, [windowMode]);
   const [contentLabel, setContentLabel] = useState('网格模型');
   const [renderStats, setRenderStats] = useState('正在测量渲染帧率');
   const [trueFov] = useTrueFovDeg();
@@ -669,8 +784,21 @@ export function DisplayCase() {
   const [metrics, setMetrics] = useState({ fps: 0, trackingFps: 0, age: null as number | null });
 
   useEffect(() => {
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (cancelled) return;
+      const stored = loadStoredSettings();
+      settingsRef.current = stored;
+      setSettings(stored);
+      setSettingsReady(true);
+    });
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    if (!settingsReady) return;
     try { window.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings)); } catch { /* storage may be disabled */ }
-  }, [settings]);
+  }, [settings, settingsReady]);
 
   useEffect(() => {
     if (!showMetrics) return;
@@ -692,11 +820,13 @@ export function DisplayCase() {
     const neutral = trackingSessionRef.current.neutral;
     const view = settings.view;
     if (faceEnabledRef.current && position && neutral) {
-      targetRef.current = physicalView(position, neutral, settings.case.width,
+      const windowWidth = settings.presentationMode === 'window' ? settings.window.width * settings.window.scale : settings.case.width;
+      targetRef.current = physicalView(position, neutral, windowWidth,
         view.visibleWidthM, view.neutralDistanceM, view.invertX, view.minimumEyeDistanceM,
-        { x: view.cameraOffsetX, y: view.cameraOffsetY, z: view.cameraOffsetZ });
+        { x: view.cameraOffsetX, y: view.cameraOffsetY, z: view.cameraOffsetZ },
+        settings.presentationMode === 'window' ? settings.window.trackingScale : 1);
     } else {
-      targetRef.current = { x: 0, y: 0, z: baselineDepth(settings) };
+      targetRef.current = { x: 0, y: 0, z: baselineDepthForWindow(settings) };
     }
   }, [settings]);
 
@@ -723,7 +853,7 @@ export function DisplayCase() {
   const calibrateFace = useCallback(() => {
     latestPositionRef.current = null;
     trackingSessionRef.current.resetCalibration();
-    targetRef.current = { x: 0, y: 0, z: baselineDepth(settingsRef.current) };
+    targetRef.current = { x: 0, y: 0, z: baselineDepthForWindow(settingsRef.current) };
     setIsMoving(false);
     setTrackerState(socketReadyRef.current ? 'calibrating' : 'offline');
     resetRef.current();
@@ -731,11 +861,113 @@ export function DisplayCase() {
 
   const resetView = useCallback(() => {
     if (faceEnabledRef.current) return calibrateFace();
-    targetRef.current = { x: 0, y: 0, z: baselineDepth(settingsRef.current) };
+    targetRef.current = { x: 0, y: 0, z: baselineDepthForWindow(settingsRef.current) };
     draggingRef.current = false;
     setIsMoving(false);
     resetRef.current();
   }, [calibrateFace]);
+
+  const startWindowFlight = useCallback(() => {
+    draggingRef.current = false;
+    windowBackupRef.current = structuredClone(settingsRef.current.window);
+    const currentSettings = settingsRef.current;
+    const currentFrame = windowFrame(currentSettings);
+    const currentNormal = currentFrame.right.clone().cross(currentFrame.up).normalize();
+    flightEyeRef.current.copy(currentFrame.center).addScaledVector(currentNormal, baselineDepthForWindow(currentSettings));
+    targetRef.current = { x: 0, y: 0, z: baselineDepthForWindow(currentSettings) };
+    resetRef.current();
+    windowModeRef.current = 'flight';
+    setWindowMode('flight');
+    updateSettings((draft) => { draft.presentationMode = 'window'; draft.window.enabled = true; draft.view.mouseDragEnabled = false; draft.window.rotationZ = 0; });
+  }, [updateSettings]);
+  const confirmWindowFlight = useCallback(() => {
+    if (document.pointerLockElement) document.exitPointerLock();
+    windowModeRef.current = 'display';
+    setWindowMode('display');
+    windowBackupRef.current = null;
+    trackingSessionRef.current.resetCalibration();
+    latestPositionRef.current = null;
+    setTrackerState(faceEnabledRef.current ? 'calibrating' : 'manual');
+  }, []);
+  const cancelWindowFlight = useCallback(() => {
+    if (document.pointerLockElement) document.exitPointerLock();
+    const backup = windowBackupRef.current;
+    if (backup) {
+      updateSettings((draft) => { draft.window = structuredClone(backup); });
+      windowBackupRef.current = null;
+    }
+    windowModeRef.current = 'display';
+    setWindowMode('display');
+  }, [updateSettings]);
+
+  const switchPresentationMode = useCallback((mode: PresentationMode) => {
+    if (document.pointerLockElement) document.exitPointerLock();
+    windowModeRef.current = 'display';
+    setWindowMode('display');
+    draggingRef.current = false;
+    updateSettings((draft) => {
+      draft.presentationMode = mode;
+      draft.window.enabled = mode === 'window';
+      if (mode === 'window') {
+        draft.view.mouseDragEnabled = false;
+        draft.window.rotationZ = 0;
+      }
+    });
+    latestPositionRef.current = null;
+    trackingSessionRef.current.resetCalibration();
+    resetRef.current();
+    setTrackerState(faceEnabledRef.current ? 'calibrating' : 'manual');
+  }, [updateSettings]);
+
+  const applyFlightLook = useCallback((dx: number, dy: number) => {
+    if (windowModeRef.current !== 'flight' || (Math.abs(dx) < 0.001 && Math.abs(dy) < 0.001)) return;
+    const next = structuredClone(settingsRef.current);
+    // FPS look: horizontal mouse delta rotates the window around world Y;
+    // vertical mouse delta rotates it around world X. Do not touch the model
+    // transform or the window position here.
+    // Invert the previous drag direction: moving the mouse right turns the
+    // view right, and moving it down turns the view down.
+    next.window.rotationY += dx * 0.0025;
+    next.window.rotationX += dy * 0.0025;
+    next.window.rotationX = clamp(next.window.rotationX, -Math.PI / 2 + 0.02, Math.PI / 2 - 0.02);
+    // Keep the first-person eye fixed while the screen plane turns in front
+    // of it. Rotating the plane around its own center would orbit the eye and
+    // produce the old "model display" feeling.
+    placeWindowInFrontOfEye(next, flightEyeRef.current);
+    settingsRef.current = next;
+    setSettings(next);
+    setIsMoving(true);
+  }, []);
+
+  useEffect(() => {
+    if (windowMode !== 'flight') return;
+    const flightKeys = flightKeysRef.current;
+    const onKeyDown = (event: KeyboardEvent) => {
+      const key = event.key.toLowerCase();
+      if (key === 'escape') { event.preventDefault(); cancelWindowFlight(); return; }
+      if (key === 'enter') { event.preventDefault(); confirmWindowFlight(); return; }
+      if (['w', 'a', 's', 'd', 'q', 'e', 'shift', 'alt', 'arrowleft', 'arrowright', 'arrowup', 'arrowdown'].includes(key)) {
+        event.preventDefault();
+        flightKeys.add(key);
+      }
+    };
+    const onKeyUp = (event: KeyboardEvent) => flightKeys.delete(event.key.toLowerCase());
+    const onMouseMove = (event: MouseEvent) => {
+      if (document.pointerLockElement) applyFlightLook(event.movementX, event.movementY);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('keyup', onKeyUp);
+    document.addEventListener('mousemove', onMouseMove);
+    const onBlur = () => flightKeys.clear();
+    window.addEventListener('blur', onBlur);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('keyup', onKeyUp);
+      document.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('blur', onBlur);
+      flightKeys.clear();
+    };
+  }, [windowMode, cancelWindowFlight, confirmWindowFlight, applyFlightLook]);
 
   const toggleTrackingMode = useCallback(() => {
     const enabled = !faceEnabledRef.current;
@@ -743,7 +975,7 @@ export function DisplayCase() {
     faceEnabledRef.current = enabled;
     setFaceEnabled(enabled);
     draggingRef.current = false;
-    targetRef.current = { x: 0, y: 0, z: baselineDepth(settingsRef.current) };
+    targetRef.current = { x: 0, y: 0, z: baselineDepthForWindow(settingsRef.current) };
     resetRef.current();
     if (enabled) {
       trackingSessionRef.current.resetCalibration();
@@ -766,14 +998,14 @@ export function DisplayCase() {
     let socket: WebSocket | null = null;
     let reconnectTimer: number | undefined;
     const lostTimer = window.setInterval(() => {
-      if (!faceEnabledRef.current) return;
+      if (!faceEnabledRef.current || windowModeRef.current === 'flight') return;
       const state = trackingSessionRef.current.stale(
         performance.now(), settingsRef.current.view.lostResetMs,
       );
       if (state.lost && socketReadyRef.current) setTrackerState('lost');
       if (state.reset) {
         latestPositionRef.current = null;
-        targetRef.current = { x: 0, y: 0, z: baselineDepth(settingsRef.current) };
+        targetRef.current = { x: 0, y: 0, z: baselineDepthForWindow(settingsRef.current) };
       }
     }, 100);
     const connect = () => {
@@ -789,7 +1021,7 @@ export function DisplayCase() {
         if (faceEnabledRef.current) setTrackerState('calibrating');
       };
       socket.onmessage = (event) => {
-        if (disposed || !faceEnabledRef.current) return;
+        if (disposed || !faceEnabledRef.current || windowModeRef.current === 'flight') return;
         let packet: TrackingPacket;
         try { packet = JSON.parse(event.data) as TrackingPacket; } catch { return; }
         if (packet && typeof packet === 'object') {
@@ -816,15 +1048,17 @@ export function DisplayCase() {
           return;
         }
         latestPositionRef.current = position;
+        const windowWidth = currentSettings.presentationMode === 'window' ? currentSettings.window.width * currentSettings.window.scale : currentSettings.case.width;
         targetRef.current = physicalView(
           position,
           neutral,
-          currentSettings.case.width,
+          windowWidth,
           currentSettings.view.visibleWidthM,
           currentSettings.view.neutralDistanceM,
           currentSettings.view.invertX,
           currentSettings.view.minimumEyeDistanceM,
           { x: currentSettings.view.cameraOffsetX, y: currentSettings.view.cameraOffsetY, z: currentSettings.view.cameraOffsetZ },
+          currentSettings.presentationMode === 'window' ? currentSettings.window.trackingScale : 1,
         );
         setTrackerState('tracking');
       };
@@ -851,7 +1085,7 @@ export function DisplayCase() {
     if (!mount) return;
     const initial = settingsRef.current;
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(initial.case.visible ? initial.case.backgroundColor : initial.case.skyColor);
+    scene.background = new THREE.Color(initial.presentationMode === 'model' && initial.case.visible ? initial.case.backgroundColor : initial.case.skyColor);
     const camera = new THREE.PerspectiveCamera(45, 16 / 9, initial.view.near, initial.view.far);
     const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
     renderer.shadowMap.enabled = true;
@@ -869,41 +1103,65 @@ export function DisplayCase() {
     scene.add(caseGroup);
     const artifact = createArtifact(initial);
     scene.add(artifact);
+    const windowPreview = new THREE.LineLoop(
+      new THREE.BufferGeometry(),
+      new THREE.LineBasicMaterial({ color: '#9fe6cf', transparent: true, opacity: 0.8 }),
+    );
+    windowPreview.visible = false;
+    scene.add(windowPreview);
     let disposed = false;
     let contentRequest = 0;
     let uploadedModel: THREE.Object3D | null = null;
+    let selectedContent: 'mesh' | 'uploaded' = 'mesh';
+    let selectedContentLabel = '网格模型';
     loadContentRef.current = async (source) => {
       const request = ++contentRequest;
       if (source === 'mesh') {
-        if (uploadedModel) uploadedModel.visible = false;
-        artifact.visible = true;
+        selectedContent = 'mesh';
+        selectedContentLabel = '网格模型';
         renderer.shadowMap.needsUpdate = true;
-        setContentLabel('网格模型');
+        setContentLabel(selectedContentLabel);
         return;
       }
       setContentLabel('正在加载模型…');
+      let url: string | null = null;
       try {
         const { GLTFLoader } = await import('three/examples/jsm/loaders/GLTFLoader.js');
-        const url = URL.createObjectURL(source);
+        const objectUrl = URL.createObjectURL(source);
+        url = objectUrl;
         const gltf = await new Promise<{ scene: THREE.Group }>((resolve, reject) => {
-          new GLTFLoader().load(url, resolve, undefined, reject);
+          new GLTFLoader().load(objectUrl, resolve, undefined, reject);
         });
-        URL.revokeObjectURL(url);
-        if (disposed || request !== contentRequest) return;
+        URL.revokeObjectURL(objectUrl);
+        url = null;
+        if (disposed || request !== contentRequest) {
+          disposeObject(gltf.scene);
+          return;
+        }
         if (uploadedModel) { scene.remove(uploadedModel); disposeObject(uploadedModel); }
         uploadedModel = gltf.scene;
+        selectedContent = 'uploaded';
+        selectedContentLabel = source.name;
+        // Preserve the asset's authored transform. In floating-window mode
+        // this transform is the fixed world-space scene transform and must
+        // not be replaced by the legacy showcase-model controls.
+        uploadedModel.userData.authoredTransform = {
+          position: uploadedModel.position.clone(),
+          quaternion: uploadedModel.quaternion.clone(),
+          scale: uploadedModel.scale.clone(),
+        };
         scene.add(uploadedModel);
-        uploadedModel.position.copy(artifact.position);
-        uploadedModel.scale.copy(artifact.scale);
-        artifact.visible = false;
+        if (settingsRef.current.presentationMode === 'model') {
+          uploadedModel.position.copy(artifact.position);
+          uploadedModel.scale.copy(artifact.scale);
+        }
         renderer.shadowMap.needsUpdate = true;
-        setContentLabel(source.name);
+        setContentLabel(selectedContentLabel);
       } catch (error) {
+        if (url) URL.revokeObjectURL(url);
         if (!disposed && request === contentRequest) {
-          if (uploadedModel) uploadedModel.visible = false;
-          artifact.visible = true;
           renderer.shadowMap.needsUpdate = true;
-          setContentLabel(`模型加载失败，已保留网格：${error instanceof Error ? error.message : String(error)}`);
+          setContentLabel(`模型加载失败，已保留 ${selectedContentLabel}：${error instanceof Error ? error.message : String(error)}`);
         }
       }
     };
@@ -917,7 +1175,7 @@ export function DisplayCase() {
     const fill = new THREE.PointLight();
     scene.add(hemisphere, key, key.target, rim, fill);
     const handles: SceneHandles = { scene, caseGroup, artifact, hemisphere, key, rim, fill };
-    const motion = new WindowMotion({ x: 0, y: 0, z: baselineDepth(initial) });
+    const motion = new WindowMotion({ x: 0, y: 0, z: baselineDepthForWindow(initial) });
     const current = motion.position;
     let animationFrame = 0;
     let previousAnimationTime = performance.now();
@@ -944,6 +1202,14 @@ export function DisplayCase() {
         renderer.shadowMap.needsUpdate = true;
         appliedSettings = active;
       }
+      // Content selection and presentation mode jointly own visibility. A GLB
+      // hidden by the model-mode mesh must become visible again when entering
+      // window mode, where it represents the fixed world behind the aperture.
+      const showUploadedModel = uploadedModel !== null
+        && (selectedContent === 'uploaded' || active.presentationMode === 'window');
+      scene.userData.hasUploadedModel = uploadedModel !== null;
+      artifact.visible = active.presentationMode === 'model' && !showUploadedModel;
+      if (uploadedModel) uploadedModel.visible = showUploadedModel;
       const pixelRatio = renderPixelRatio(
         mount.clientWidth,
         mount.clientHeight,
@@ -972,27 +1238,86 @@ export function DisplayCase() {
         frameIntervals = [];
       }
       motion.update(targetRef.current, deltaSeconds, active.view.smoothing);
+      if (windowModeRef.current === 'flight' && active.presentationMode === 'window') {
+        const keys = flightKeysRef.current;
+        const frame = windowFrame(active);
+        const normal = frame.right.clone().cross(frame.up).normalize();
+        const forward = normal.clone().negate();
+        const speed = (keys.has('shift') ? 5.4 : keys.has('alt') ? 0.24 : 1.35) * deltaSeconds;
+        let changed = false;
+        const move = (axis: THREE.Vector3, amount: number) => {
+          flightEyeRef.current.addScaledVector(axis, amount);
+          changed = true;
+        };
+        // Three's camera looks along local -Z, represented here by `forward`.
+        if (keys.has('w')) move(forward, speed);
+        if (keys.has('s')) move(forward, -speed);
+        if (keys.has('a')) move(frame.right, -speed);
+        if (keys.has('d')) move(frame.right, speed);
+        if (keys.has('q')) move(new THREE.Vector3(0, 1, 0), -speed);
+        if (keys.has('e')) move(new THREE.Vector3(0, 1, 0), speed);
+        if (keys.has('arrowleft')) { active.window.rotationY += 1.4 * deltaSeconds; changed = true; }
+        if (keys.has('arrowright')) { active.window.rotationY -= 1.4 * deltaSeconds; changed = true; }
+        if (keys.has('arrowup')) { active.window.rotationX += 1.4 * deltaSeconds; changed = true; }
+        if (keys.has('arrowdown')) { active.window.rotationX -= 1.4 * deltaSeconds; changed = true; }
+        if (changed) {
+          active.window.rotationX = clamp(active.window.rotationX, -Math.PI / 2 + 0.02, Math.PI / 2 - 0.02);
+          placeWindowInFrontOfEye(active, flightEyeRef.current);
+          settingsRef.current = active;
+          flightSyncFrameRef.current += 1;
+          if (flightSyncFrameRef.current % 3 === 0) setSettings(structuredClone(active));
+        }
+      }
       artifact.rotation.set(active.model.rotationX, active.model.rotationY, active.model.rotationZ);
       if (uploadedModel) {
-        uploadedModel.position.copy(artifact.position);
-        uploadedModel.scale.copy(artifact.scale);
-        uploadedModel.rotation.set(active.model.rotationX, active.model.rotationY, active.model.rotationZ);
+        if (active.presentationMode === 'window') {
+          const authored = uploadedModel.userData.authoredTransform as {
+            position: THREE.Vector3;
+            quaternion: THREE.Quaternion;
+            scale: THREE.Vector3;
+          } | undefined;
+          if (authored) {
+            uploadedModel.position.copy(authored.position);
+            uploadedModel.quaternion.copy(authored.quaternion);
+            uploadedModel.scale.copy(authored.scale);
+          }
+        } else {
+          uploadedModel.position.copy(artifact.position);
+          uploadedModel.scale.copy(artifact.scale);
+          uploadedModel.rotation.set(active.model.rotationX, active.model.rotationY, active.model.rotationZ);
+        }
       }
+      const frame = presentationFrame(active);
+      const plane = windowPlaneFromAnchor(frame);
+      const normal = frame.right.clone().cross(frame.up).normalize();
+      const eye = active.presentationMode === 'window'
+        ? (windowModeRef.current === 'flight'
+          ? flightEyeRef.current.clone()
+          : frame.center.clone().addScaledVector(frame.right, current.x).addScaledVector(frame.up, current.y).addScaledVector(normal, current.z))
+        : new THREE.Vector3(current.x, current.y, current.z);
       applyWindowProjection(
         camera,
-        current,
-        active.case.width,
-        active.case.height,
+        eye,
+        frame.width,
+        frame.height,
         active.view.near,
-        Math.max(active.view.far, current.z + active.case.depth + 1),
+        Math.max(active.view.far, Math.abs(current.z) + active.case.depth + 1),
+        active.presentationMode === 'window' ? plane : undefined,
       );
+      windowPreview.visible = windowModeRef.current === 'flight' || active.presentationMode === 'window';
+      if (windowPreview.visible) {
+        const points = [plane.bottomLeft, plane.bottomRight,
+          new THREE.Vector3(plane.bottomRight.x, plane.bottomRight.y, plane.bottomRight.z)
+            .add(new THREE.Vector3(plane.topLeft.x, plane.topLeft.y, plane.topLeft.z).sub(plane.bottomLeft)), plane.topLeft];
+        windowPreview.geometry.setFromPoints(points.map((p) => new THREE.Vector3(p.x, p.y, p.z)));
+      }
       renderer.render(scene, camera);
       metricsRef.current.frames += 1;
     };
     resetRef.current = () => motion.reset({
       x: 0,
       y: 0,
-      z: baselineDepth(settingsRef.current),
+      z: baselineDepthForWindow(settingsRef.current),
     });
     const observer = new ResizeObserver(resize);
     observer.observe(mount);
@@ -1011,7 +1336,17 @@ export function DisplayCase() {
   }, []);
 
   const moveView = (event: React.PointerEvent<HTMLDivElement>) => {
-    if (!draggingRef.current || !settingsRef.current.view.mouseDragEnabled) return;
+    const isFlight = windowModeRef.current === 'flight';
+    if (isFlight) {
+      if (!draggingRef.current) return;
+      if (document.pointerLockElement) return;
+      const dx = event.movementX || event.clientX - modelDragRef.current.x;
+      const dy = event.movementY || event.clientY - modelDragRef.current.y;
+      modelDragRef.current = { x: event.clientX, y: event.clientY };
+      applyFlightLook(dx, dy);
+      return;
+    }
+    if (!draggingRef.current || !settingsRef.current.view.mouseDragEnabled || settingsRef.current.presentationMode === 'window') return;
     const previous = modelDragRef.current;
     const dx = event.clientX - previous.x;
     const dy = event.clientY - previous.y;
@@ -1025,7 +1360,17 @@ export function DisplayCase() {
     setIsMoving(true);
   };
   const startView = (event: React.PointerEvent<HTMLDivElement>) => {
-    if (!settingsRef.current.view.mouseDragEnabled) return;
+    if (windowModeRef.current === 'flight') {
+      event.preventDefault();
+      draggingRef.current = true;
+      modelDragRef.current = { x: event.clientX, y: event.clientY };
+      event.currentTarget.setPointerCapture(event.pointerId);
+      const pointerLock = event.currentTarget.requestPointerLock?.();
+      if (pointerLock) void pointerLock.catch(() => {});
+      setIsMoving(true);
+      return;
+    }
+    if (!settingsRef.current.view.mouseDragEnabled || settingsRef.current.presentationMode === 'window') return;
     draggingRef.current = true;
     modelDragRef.current = { x: event.clientX, y: event.clientY };
     event.currentTarget.setPointerCapture(event.pointerId);
@@ -1035,6 +1380,7 @@ export function DisplayCase() {
   const endView = (event: React.PointerEvent<HTMLDivElement>) => {
     draggingRef.current = false;
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    if (windowModeRef.current === 'flight' && document.pointerLockElement) document.exitPointerLock();
     setIsMoving(false);
   };
   const toggleFullscreen = () => {
@@ -1044,7 +1390,7 @@ export function DisplayCase() {
     else void element.requestFullscreen();
   };
 
-  const statusLabel = isMoving ? '鼠标旋转模型' : trackerLabels[trackerState];
+  const statusLabel = windowMode === 'flight' ? '飞行设置窗户' : isMoving ? '鼠标旋转模型' : trackerLabels[trackerState];
   const statusColor = trackerState === 'tracking' ? 'bg-[#71c8a2]' : trackerState === 'offline' ? 'bg-[#e36f63]' : trackerState === 'lost' ? 'bg-[#e8a45e]' : 'bg-[#7fb3c8]';
   return (
     <section className="max-w-none" style={{ width: `min(100vw, ${100 * settings.case.width / settings.case.height}vh)` }}>
@@ -1052,19 +1398,23 @@ export function DisplayCase() {
         className="case-shell relative overflow-hidden bg-[#101415] shadow-[0_42px_100px_rgba(0,0,0,0.55)]"
         style={{ '--case-aspect': settings.case.width / settings.case.height } as React.CSSProperties}
       >
-        <div data-case-viewport style={{ aspectRatio: `${settings.case.width} / ${settings.case.height}` }} className="relative w-full cursor-crosshair overflow-hidden bg-[#171b1c]" onPointerDown={startView} onPointerMove={moveView} onPointerUp={endView} onPointerCancel={endView}>
+        <div data-case-viewport style={{ aspectRatio: `${settings.case.width} / ${settings.case.height}` }} className={`relative w-full overflow-hidden bg-[#171b1c] ${windowMode === 'flight' ? 'cursor-none' : 'cursor-crosshair'}`} onPointerDown={startView} onPointerMove={moveView} onPointerUp={endView} onPointerCancel={endView}>
           <div ref={mountRef} className="absolute inset-0" aria-label="三维虚拟展示箱" />
           <div className="screen-frame pointer-events-none absolute inset-0 z-30" aria-hidden="true" />
           <div className="absolute left-4 top-4 z-40 max-w-[55%] rounded-lg bg-black/50 p-2 text-xs text-white/80" onPointerDown={(event) => event.stopPropagation()}>
             <div className="flex flex-wrap gap-3">
               <button type="button" onClick={() => void loadContentRef.current('mesh')}>网格</button>
               <label className="cursor-pointer">上传模型<input aria-label="上传本地三维模型" type="file" className="sr-only" accept=".glb,.gltf,model/gltf-binary,model/gltf+json" onChange={(event) => { const file = event.target.files?.[0]; if (file) void loadContentRef.current(file); event.target.value = ''; }} /></label>
+              <button type="button" className={settings.presentationMode === 'model' ? 'text-[#c8eadc]' : ''} onClick={() => switchPresentationMode('model')}>模型展示</button>
+              <button type="button" className={settings.presentationMode === 'window' ? 'text-[#c8eadc]' : ''} onClick={() => switchPresentationMode('window')}>窗户模式</button>
+              {settings.presentationMode === 'window' && (windowMode === 'display' ? <button type="button" onClick={startWindowFlight}>设置窗户</button> : <><button type="button" onClick={confirmWindowFlight}>确认窗户</button><button type="button" onClick={cancelWindowFlight}>取消</button></>)}
             </div>
             <output className="mt-1 block break-words text-[10px] text-white/60">{contentLabel}</output>
             <output className="block text-[10px] text-white/50" aria-label="渲染性能">{renderStats}</output>
           </div>
+          {windowMode === 'flight' && <div className="pointer-events-none absolute bottom-20 left-1/2 z-40 -translate-x-1/2 rounded-xl border border-[#9fe6cf]/35 bg-[#0b1515]/85 px-4 py-3 text-center text-xs text-[#d7eee5] shadow-xl backdrop-blur-md"><div className="font-semibold tracking-wide text-[#9fe6cf]">飞行设置窗户</div><div className="mt-1 text-[11px] text-white/70">点击画面捕获鼠标 · 鼠标左右旋转 Y 轴 · 上下旋转 X 轴 · W 前进 / S 后退 · A/D 横移 · Q 下降 / E 上升 · ←/→ 微调 Y 轴 · Shift 加速 · Enter 确认 · Esc 取消</div></div>}
           <div className="pointer-events-none absolute inset-x-0 top-0 flex items-start justify-end bg-gradient-to-b from-black/40 to-transparent px-5 pb-12 pt-5 sm:px-8 sm:pt-7"><div className="flex items-center gap-2 rounded-full border border-white/10 bg-black/20 px-3 py-1.5 text-[11px] text-white/65 backdrop-blur-md"><span className={`size-1.5 rounded-full ${statusColor}`} />{statusLabel}</div></div>
-          {settingsOpen && <SettingsPanel settings={settings} update={updateSettings} reset={resetSettings} backendFovDeg={backendFov} onClose={() => setSettingsOpen(false)} />}
+          {settingsOpen && <SettingsPanel settings={settings} update={updateSettings} reset={resetSettings} backendFovDeg={backendFov} onModeChange={switchPresentationMode} onClose={() => setSettingsOpen(false)} />}
           {showMetrics && <output className="pointer-events-none absolute left-4 top-28 z-40 rounded bg-black/70 p-3 text-xs text-white">
             渲染 {metrics.fps.toFixed(0)} FPS · 追踪 {metrics.age !== null && metrics.age < 1000 ? metrics.trackingFps.toFixed(0) : '—'} FPS<br />
             数据距今 {metrics.age === null ? '尚未收到' : `${Math.round(metrics.age)} ms`}
