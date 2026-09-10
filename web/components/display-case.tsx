@@ -1418,7 +1418,7 @@ export function DisplayCase() {
           {showMetrics && <output className="pointer-events-none absolute left-4 top-28 z-40 rounded bg-black/70 p-3 text-xs text-white">
             渲染 {metrics.fps.toFixed(0)} FPS · 追踪 {metrics.age !== null && metrics.age < 1000 ? metrics.trackingFps.toFixed(0) : '—'} FPS<br />
             数据距今 {metrics.age === null ? '尚未收到' : `${Math.round(metrics.age)} ms`}
-            {trueFov !== null && <><br />视场角修正 {trueFov.toFixed(1)}° · 深度 ×{depthScaleFor(backendFovRef.current, trueFov).toFixed(2)}</>}
+            {trueFov !== null && <><br />视场角修正 {trueFov.toFixed(1)}° · 深度 ×{depthScaleFor(backendFov, trueFov).toFixed(2)}</>}
           </output>}
           <div className="absolute bottom-4 left-4 right-4 z-40 flex items-end justify-end gap-3 sm:bottom-7 sm:left-8 sm:right-8" onPointerDown={(event) => event.stopPropagation()}><div className="flex gap-2">
             <Button type="button" variant="outline" size="sm" aria-pressed={showMetrics} onClick={() => setShowMetrics((value) => !value)} className="border-white/15 bg-black/35 text-white">性能</Button>

@@ -10,8 +10,34 @@ import {
   useTrueFovDeg,
 } from '@/lib/fov-calibration';
 
-type Packet = any;
-type DebugPoint = { x: number; y: number; name?: string; index?: number; group?: string; pixel?: { x: number; y: number } };
+type DebugPoint = {
+  x: number;
+  y: number;
+  name?: string;
+  index?: number;
+  group?: string;
+  pixel?: { x: number; y: number };
+};
+
+/** Only the fields this page reads; the protocol sends more. */
+type FacePayload = {
+  model?: string;
+  debug_points?: DebugPoint[];
+  eyes?: { source?: string };
+  bbox?: { normalized?: { x: number; y: number; width: number; height: number } };
+  quality?: { tracking_level?: string; valid_points?: number };
+  viewer_position_m?: { filtered?: { x: number; y: number; z: number } | null };
+  head_rotation_deg?: Record<string, number> | null;
+};
+
+type Packet = {
+  tracking?: boolean;
+  tracker_backend?: string;
+  camera_hfov_deg?: number;
+  processing_ms?: number;
+  frame?: { fps?: number; fps_window?: number };
+  face?: FacePayload | null;
+};
 
 const GROUP_COLOR: Record<string, string> = {
   yunet: 'bg-cyan-300',
@@ -25,15 +51,20 @@ export default function DebugPage() {
   useEffect(() => { const ws = new WebSocket('ws://127.0.0.1:8765/ws/v1/tracking'); ws.onmessage = e => setPacket(JSON.parse(e.data)); return () => { ws.close(); }; }, []);
   const face = packet?.face;
   const points: DebugPoint[] = face?.debug_points ?? [];
-  // "used" points = the two eyes actually driving geometry (from eyes payload).
-  const eyeUsed = [face?.eyes?.left?.pixel, face?.eyes?.right?.pixel].filter(Boolean);
   const visible = showAll ? points : points.filter(p => p.group === 'yunet');
-  const backendFov = Number.isFinite(packet?.camera_hfov_deg) ? packet.camera_hfov_deg : DEFAULT_BACKEND_FOV_DEG;
+  const reportedFov = packet?.camera_hfov_deg;
+  const backendFov = typeof reportedFov === 'number' && Number.isFinite(reportedFov) ? reportedFov : DEFAULT_BACKEND_FOV_DEG;
   const depthScale = depthScaleFor(backendFov, trueFov);
   const filtered = face?.viewer_position_m?.filtered ?? null;
   const corrected = filtered ? applyDepthScale(filtered, depthScale) : null;
   const sliderValue = trueFov ?? backendFov;
-  return <main className="min-h-screen bg-[#111] p-6 text-[#eee]"><h1 className="mb-4 text-2xl">Face model debugger</h1><div className="grid gap-6 lg:grid-cols-[minmax(480px,2fr)_1fr]"><section className="relative aspect-video overflow-hidden rounded border border-white/20 bg-black"><img src="http://127.0.0.1:8765/api/v1/debug/stream" alt="camera" className="absolute inset-0 z-0 h-full w-full object-contain" /><div className="pointer-events-none absolute inset-0 z-10">{face?.bbox?.normalized && <div className="absolute border-2 border-green-400" style={{left:`${face.bbox.normalized.x*100}%`,top:`${face.bbox.normalized.y*100}%`,width:`${face.bbox.normalized.width*100}%`,height:`${face.bbox.normalized.height*100}%`}}/>}{visible.map((p,i)=><span key={`${p.group}-${p.name ?? p.index}-${i}`} title={`${p.group ?? ''} ${p.name ?? ''}${p.index!=null?' #'+p.index:''}`} className={`absolute h-[6px] w-[6px] -translate-x-1/2 -translate-y-1/2 rounded-full ${GROUP_COLOR[p.group ?? 'yunet'] ?? 'bg-cyan-300'}`} style={{left:`${p.x*100}%`,top:`${p.y*100}%`}} />)}</div></section><aside className="space-y-2 font-mono text-sm">
+  // The preview must be a plain <img>: a multipart/x-mixed-replace MJPEG
+  // stream cannot be routed through the Next image optimiser.
+  return <main className="min-h-screen bg-[#111] p-6 text-[#eee]"><h1 className="mb-4 text-2xl">Face model debugger</h1><div className="grid gap-6 lg:grid-cols-[minmax(480px,2fr)_1fr]"><section className="relative aspect-video overflow-hidden rounded border border-white/20 bg-black">{/* eslint-disable-next-line next/no-img-element -- MJPEG stream, not optimisable */}<img
+        src="http://127.0.0.1:8765/api/v1/debug/stream"
+        alt="摄像头预览"
+        className="absolute inset-0 z-0 h-full w-full object-contain"
+      /><div className="pointer-events-none absolute inset-0 z-10">{face?.bbox?.normalized && <div className="absolute border-2 border-green-400" style={{left:`${face.bbox.normalized.x*100}%`,top:`${face.bbox.normalized.y*100}%`,width:`${face.bbox.normalized.width*100}%`,height:`${face.bbox.normalized.height*100}%`}}/>}{visible.map((p,i)=><span key={`${p.group}-${p.name ?? p.index}-${i}`} title={`${p.group ?? ''} ${p.name ?? ''}${p.index!=null?' #'+p.index:''}`} className={`absolute h-[6px] w-[6px] -translate-x-1/2 -translate-y-1/2 rounded-full ${GROUP_COLOR[p.group ?? 'yunet'] ?? 'bg-cyan-300'}`} style={{left:`${p.x*100}%`,top:`${p.y*100}%`}} />)}</div></section><aside className="space-y-2 font-mono text-sm">
       <div className="rounded border border-cyan-400/30 bg-cyan-400/5 p-3 font-sans">
         <div className="mb-2 flex items-baseline justify-between gap-3">
           <span className="text-xs text-white/70">真实水平视场角 HFOV</span>
