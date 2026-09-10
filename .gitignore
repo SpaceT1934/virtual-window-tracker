@@ -5,4 +5,15 @@ __pycache__/
 *.py[cod]
 models/*.task
 models/*.tflite
+models/*.onnx
+models/*.yaml
 web/.npm-cache/
+
+# Local scraping and browser artifacts
+.firecrawl/
+web/outputs/
+
+# Frontend build and tooling caches
+web/.next/
+web/node_modules/
+web/tsconfig.tsbuildinfo

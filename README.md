@@ -98,6 +98,20 @@ macOS 第一次启动摄像头时，需要允许终端或 Codex 使用摄像头�
 
 ## 启动项目
 
+### Windows 一键启动（依赖已安装）
+
+使用名为 `virtual-window-tracker` 的 Conda 环境（Python 3.12），并安装好后端依赖和 `web/node_modules` 后，双击根目录的 `start.cmd`，或在 PowerShell 中运行：
+
+```powershell
+.\start.cmd
+```
+
+脚本会自动使用 Conda 环境、启动后端与网页，并打开 <http://127.0.0.1:3000/>。默认请求 640 × 480 摄像头画面，并启用前端文件轮询监听。已有的 `FACE_*` 环境变量会保留。
+
+在启动窗口按 Enter 或 Ctrl+C 会停止两个服务。端口被占用时脚本会提示，不会终止已有进程。使用 `.\start.cmd --no-browser` 可跳过自动打开浏览器。
+
+### 手动安装与启动
+
 先安装 Python 依赖：
 
 ```bash
@@ -215,7 +229,8 @@ WebSocket 只在产生新结果时发送数据，`sequence` 可用于判断是�
 
 | 变量 | 默认值 | 说明 |
 |---|---:|---|
-| `FACE_CAMERA_SOURCE` | `0` | 摄像头编号，也可以是视频文件绝对路径 |
+| `FACE_TRACKER_BACKEND` | `detector` | 检测后端:`detector`(BlazeFace)/ `landmarker`(face_landmarker 68 点)/ `yunet`(OpenCV YuNet + Facemark LBF) |
+| `FACE_CAMERA_SOURCE` | `0` | 摄像头编号,也可以是视频文件绝对路径 |
 | `FACE_CAMERA_WIDTH` | `1280` | 请求的摄像头宽度 |
 | `FACE_CAMERA_HEIGHT` | `720` | 请求的摄像头高度 |
 | `FACE_CAMERA_FPS` | `30` | 请求帧率，最终结果取决于摄像头 |
@@ -251,6 +266,23 @@ FACE_CAMERA_SOURCE=1 uv run face-tracker preview
 ```bash
 FACE_CAMERA_SOURCE=/absolute/path/to/video.mp4 uv run face-tracker serve
 ```
+
+### 使用 OpenCV YuNet + Facemark 后端
+
+本地 CPU 运行、依赖更少的替代检测链路。首次使用会从 opencv_zoo 官方源下载 YuNet 检测器（约 230 KB）到 `models/`；Facemark LBF（约 54 MB）是可选升级，缺省时自动降级为 YuNet 自带的关键点。
+
+```bash
+FACE_TRACKER_BACKEND=yunet uv run face-tracker serve
+```
+
+`model` 字段会标记为 `opencv-yunet`。眼睛点优先来自 Facemark LBF 的 68 点模型（`eyes.source = facemark-lbf`）；若 LBF 模型缺失或加载失败，则退回 YuNet 检测器自带的眼睛关键点（`eyes.source = yunet-keypoints`）。两种来源都基于同一套眼中心/眼距几何计算输出 `viewer_position_m`。
+
+相关环境变量：
+
+| 变量 | 默认值 | 说明 |
+|---|---:|---|
+| `FACE_YUNET_MODEL_PATH` | `models/face_detection_yunet_2023mar.onnx` | YuNet 检测器文件 |
+| `FACE_LBF_MODEL_PATH` | `models/lbfmodel.yaml` | Facemark LBF 关键点模型（可选，失败不阻塞） |
 
 ## 项目结构
 

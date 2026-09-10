@@ -7,6 +7,22 @@ from pathlib import Path
 
 
 def ensure_model(model_path: Path, model_url: str) -> Path:
+    return _download(model_path, model_url)
+
+
+def ensure_model_optional(model_path: Path, model_url: str) -> Path | None:
+    """Download a model only if it is not present, never raising on failure.
+
+    Used for optional models (e.g. Facemark LBF) where a missing file should
+    degrade gracefully instead of preventing the tracker from starting.
+    """
+    try:
+        return _download(model_path, model_url)
+    except Exception:
+        return None
+
+
+def _download(model_path: Path, model_url: str) -> Path:
     if model_path.is_file() and model_path.stat().st_size > 0:
         return model_path
 

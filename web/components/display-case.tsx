@@ -15,6 +15,14 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 
 import { Button } from '@/components/ui/button';
+import {
+  DEFAULT_BACKEND_FOV_DEG,
+  MAX_CALIBRATION_FOV_DEG,
+  MIN_CALIBRATION_FOV_DEG,
+  depthScaleFor,
+  setTrueFovDeg,
+  useTrueFovDeg,
+} from '@/lib/fov-calibration';
 import { RenderBudget, renderPixelRatio } from '@/lib/render-budget';
 import { WindowMotion } from '@/lib/window-motion';
 import { applyWindowProjection } from '@/lib/window-projection';
@@ -27,6 +35,7 @@ type TrackerState = 'connecting' | 'tracking' | 'calibrating' | 'lost' | 'offlin
 type TrackingPacket = {
   frame?: { fps?: number };
   tracking?: boolean;
+  camera_hfov_deg?: number;
   face?: { viewer_position_m?: { filtered?: ViewerPosition } | null } | null;
 };
 
@@ -572,7 +581,7 @@ function ColorControl({ label, value, onChange }: { label: string; value: string
 }
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
-  const [open, setOpen] = useState(title === '模型' || title === '视角与深度' || title === '虚拟窗户');
+  const [open, setOpen] = useState(title === '模型' || title === '视角与深度' || title === '跟踪响应' || title === '虚拟窗户');
   const order = title === '视角与深度' ? 'view' : title === '模型' ? 'model' : title === '虚拟窗户' ? 'window' : title === '跟踪响应' ? 'tracking' : title === '展示箱' ? 'case' : title === '连接' ? 'connection' : 'advanced';
   return (
     <section className={`settings-section settings-section-${order}`}>
@@ -585,15 +594,18 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   );
 }
 
-function SettingsPanel({ settings, update, reset, onClose, onModeChange }: {
+function SettingsPanel({ settings, update, reset, onClose, backendFovDeg, onModeChange }: {
   settings: DisplaySettings;
   update: (mutate: (draft: DisplaySettings) => void) => void;
   reset: () => void;
   onClose: () => void;
+  backendFovDeg: number;
   onModeChange: (mode: PresentationMode) => void;
 }) {
   const isWindowMode = settings.presentationMode === 'window';
   const [urlDraft, setUrlDraft] = useState(settings.connectionUrl);
+  const [trueFov, setTrueFov] = useTrueFovDeg();
+  const depthScale = depthScaleFor(backendFovDeg, trueFov);
   const validUrl = (() => {
     try {
       const protocol = new URL(urlDraft).protocol;
@@ -640,6 +652,14 @@ function SettingsPanel({ settings, update, reset, onClose, onModeChange }: {
         </Section>
         <Section title="跟踪响应">
           <p className="settings-hint">X、Y、Z 均使用同一米制比例；Z 为眼睛相对校准位置的真实前后移动。</p>
+          <p className="settings-hint">实时视场角校正：深度由后端的视场角推算（z 与 tan(hfov/2) 成反比），广角摄像头沿用默认值会把距离算大、跟随幅度偏小。改成摄像头的真实视场角即可，只影响深度、x/y 无需修正；想用实测距离核对 z，去 /debug 页面看。</p>
+          {number('真实水平视场角', trueFov ?? backendFovDeg, (value) => setTrueFov(value), MIN_CALIBRATION_FOV_DEG, MAX_CALIBRATION_FOV_DEG, 1, '°')}
+          <div className="flex flex-wrap items-center gap-3 text-xs text-white/60">
+            <Button type="button" variant="outline" size="sm" disabled={trueFov === null} onClick={() => setTrueFov(null)}>跟随后端</Button>
+            <span>后端设定 <code>{backendFovDeg.toFixed(1)}°</code></span>
+            <span>深度系数 <code className={depthScale === 1 ? undefined : 'text-amber-300'}>×{depthScale.toFixed(3)}</code></span>
+            {trueFov !== null && <span className="text-amber-300">修正已生效</span>}
+          </div>
           <label className="settings-toggle"><span>反转摄像头水平移动</span><input type="checkbox" checked={settings.view.invertX} onChange={(event) => update((d) => { d.view.invertX = event.target.checked; })} /></label>
           <label className="settings-toggle"><span>鼠标拖拽旋转模型</span><input type="checkbox" disabled={isWindowMode} checked={isWindowMode ? false : settings.view.mouseDragEnabled} onChange={(event) => update((d) => { d.view.mouseDragEnabled = event.target.checked; })} /></label>
         </Section>
@@ -735,6 +755,8 @@ export function DisplayCase() {
   const faceEnabledRef = useRef(true);
   const socketReadyRef = useRef(false);
   const trackingSessionRef = useRef(new TrackingSession());
+  const trueFovRef = useRef<number | null>(null);
+  const backendFovRef = useRef(DEFAULT_BACKEND_FOV_DEG);
   const latestPositionRef = useRef<ViewerPosition | null>(null);
   const modelDragRef = useRef({ x: 0, y: 0 });
   const windowModeRef = useRef<'display' | 'flight'>('display');
@@ -757,6 +779,8 @@ export function DisplayCase() {
   useEffect(() => { windowModeRef.current = windowMode; }, [windowMode]);
   const [contentLabel, setContentLabel] = useState('网格模型');
   const [renderStats, setRenderStats] = useState('正在测量渲染帧率');
+  const [trueFov] = useTrueFovDeg();
+  const [backendFov, setBackendFov] = useState(DEFAULT_BACKEND_FOV_DEG);
   const [metrics, setMetrics] = useState({ fps: 0, trackingFps: 0, age: null as number | null });
 
   useEffect(() => {
@@ -820,6 +844,7 @@ export function DisplayCase() {
     const next = cloneSettings();
     latestPositionRef.current = null;
     trackingSessionRef.current.resetCalibration();
+    setTrueFovDeg(null);
     settingsRef.current = next;
     setSettings(next);
     try { window.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(next)); } catch { /* storage may be disabled */ }
@@ -958,6 +983,16 @@ export function DisplayCase() {
     } else setTrackerState('manual');
   }, []);
 
+  // The debug page owns the FOV override; this view only consumes it. Changing
+  // it invalidates the neutral calibration that was recorded in the old depth
+  // scale, so drop it and let the next stable samples re-establish it.
+  useEffect(() => {
+    if (trueFovRef.current === trueFov) return;
+    trueFovRef.current = trueFov;
+    trackingSessionRef.current.resetCalibration();
+    latestPositionRef.current = null;
+  }, [trueFov]);
+
   useEffect(() => {
     let disposed = false;
     let socket: WebSocket | null = null;
@@ -994,7 +1029,15 @@ export function DisplayCase() {
           metricsRef.current.trackingFps = Number.isFinite(packet.frame?.fps) ? packet.frame!.fps! : 0;
         }
         const now = performance.now();
-        const position = trackingSessionRef.current.accept(packet, now);
+        if (Number.isFinite(packet.camera_hfov_deg) && packet.camera_hfov_deg !== backendFovRef.current) {
+          backendFovRef.current = packet.camera_hfov_deg!;
+          setBackendFov(packet.camera_hfov_deg!);
+        }
+        const position = trackingSessionRef.current.accept(
+          packet,
+          now,
+          depthScaleFor(backendFovRef.current, trueFovRef.current),
+        );
         const neutral = trackingSessionRef.current.neutral;
         const currentSettings = settingsRef.current;
         if (!position || !neutral) {
@@ -1371,10 +1414,11 @@ export function DisplayCase() {
           </div>
           {windowMode === 'flight' && <div className="pointer-events-none absolute bottom-20 left-1/2 z-40 -translate-x-1/2 rounded-xl border border-[#9fe6cf]/35 bg-[#0b1515]/85 px-4 py-3 text-center text-xs text-[#d7eee5] shadow-xl backdrop-blur-md"><div className="font-semibold tracking-wide text-[#9fe6cf]">飞行设置窗户</div><div className="mt-1 text-[11px] text-white/70">点击画面捕获鼠标 · 鼠标左右旋转 Y 轴 · 上下旋转 X 轴 · W 前进 / S 后退 · A/D 横移 · Q 下降 / E 上升 · ←/→ 微调 Y 轴 · Shift 加速 · Enter 确认 · Esc 取消</div></div>}
           <div className="pointer-events-none absolute inset-x-0 top-0 flex items-start justify-end bg-gradient-to-b from-black/40 to-transparent px-5 pb-12 pt-5 sm:px-8 sm:pt-7"><div className="flex items-center gap-2 rounded-full border border-white/10 bg-black/20 px-3 py-1.5 text-[11px] text-white/65 backdrop-blur-md"><span className={`size-1.5 rounded-full ${statusColor}`} />{statusLabel}</div></div>
-          {settingsOpen && <SettingsPanel settings={settings} update={updateSettings} reset={resetSettings} onModeChange={switchPresentationMode} onClose={() => setSettingsOpen(false)} />}
+          {settingsOpen && <SettingsPanel settings={settings} update={updateSettings} reset={resetSettings} backendFovDeg={backendFov} onModeChange={switchPresentationMode} onClose={() => setSettingsOpen(false)} />}
           {showMetrics && <output className="pointer-events-none absolute left-4 top-28 z-40 rounded bg-black/70 p-3 text-xs text-white">
             渲染 {metrics.fps.toFixed(0)} FPS · 追踪 {metrics.age !== null && metrics.age < 1000 ? metrics.trackingFps.toFixed(0) : '—'} FPS<br />
             数据距今 {metrics.age === null ? '尚未收到' : `${Math.round(metrics.age)} ms`}
+            {trueFov !== null && <><br />视场角修正 {trueFov.toFixed(1)}° · 深度 ×{depthScaleFor(backendFovRef.current, trueFov).toFixed(2)}</>}
           </output>}
           <div className="absolute bottom-4 left-4 right-4 z-40 flex items-end justify-end gap-3 sm:bottom-7 sm:left-8 sm:right-8" onPointerDown={(event) => event.stopPropagation()}><div className="flex gap-2">
             <Button type="button" variant="outline" size="sm" aria-pressed={showMetrics} onClick={() => setShowMetrics((value) => !value)} className="border-white/15 bg-black/35 text-white">性能</Button>

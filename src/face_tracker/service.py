@@ -20,13 +20,19 @@ class TrackingService:
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._latest: dict[str, Any] | None = None
+        self._latest_jpeg: bytes | None = None
         self._published_monotonic = 0.0
+        self._fps_samples: list[float] = []
         self._status: dict[str, Any] = {
             "state": "stopped",
             "error": None,
             "camera_source": settings.camera_source,
             "tracker_backend": settings.tracker_backend,
             "capture_mode": "latest-frame",
+            # Geometry the reported positions were derived from, so a client can
+            # reinterpret them without guessing what the process was started with.
+            "camera_hfov_deg": settings.camera_hfov_deg,
+            "assumed_ipd_m": settings.assumed_ipd_m,
         }
 
     def start(self) -> None:
@@ -55,6 +61,10 @@ class TrackingService:
     def status(self) -> dict[str, Any]:
         with self._lock:
             return deepcopy(self._status)
+
+    def latest_jpeg(self):
+        with self._lock:
+            return self._latest_jpeg
 
     def _set_status(self, state: str, error: str | None = None, **extra: Any) -> None:
         with self._lock:
@@ -90,6 +100,9 @@ class TrackingService:
                         sample.image, int(sample.monotonic_s * 1000)
                     )
                     finished = time.perf_counter()
+                    ok, encoded = cv2.imencode('.jpg', sample.image)
+                    self._fps_samples.append(sample.fps)
+                    self._fps_samples = self._fps_samples[-30:]
                     if (
                         not camera.is_current(sample)
                         or finished - sample.monotonic_s > 0.25
@@ -101,6 +114,8 @@ class TrackingService:
                         "type": "face_tracking",
                         "sequence": sequence,
                         "tracker_backend": self.settings.tracker_backend,
+                        "camera_hfov_deg": self.settings.camera_hfov_deg,
+                        "assumed_ipd_m": self.settings.assumed_ipd_m,
                         "captured_at_unix_ms": sample.unix_ms,
                         "published_at_unix_ms": int(time.time() * 1000),
                         "processing_ms": round((finished - started) * 1000, 2),
@@ -112,6 +127,7 @@ class TrackingService:
                             "width": int(sample.image.shape[1]),
                             "height": int(sample.image.shape[0]),
                             "fps": round(sample.fps, 2),
+                            "fps_window": round(sum(self._fps_samples) / len(self._fps_samples), 2),
                         },
                         **tracking,
                     }
@@ -123,6 +139,7 @@ class TrackingService:
                         ):
                             continue
                         self._latest = packet
+                        if ok: self._latest_jpeg = encoded.tobytes()
                         self._published_monotonic = finished
         except Exception as exc:
             self._set_status("error", f"{type(exc).__name__}: {exc}")
