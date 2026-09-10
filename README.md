@@ -41,9 +41,11 @@
 
 ### 人脸检测
 
-当前使用 MediaPipe 的 BlazeFace Short Range Face Detector。它会返回人脸框和六个关键点，本项目只取左右眼关键点来计算眼睛中心和眼间距。
+检测后端可插拔，默认使用 OpenCV YuNet + Facemark LBF，详细介绍见下方“使用 OpenCV YuNet + Facemark 后端”。它依赖更少、能在本地 CPU 上跑，并在 Facemark 可用时提供 68 个关键点。
 
-这里没有使用更重的 Face Landmarker。展示箱不需要 478 个面部关键点、表情系数或身份特征，Face Detector 提供的双眼位置已经足够，而且在同一台机器上更容易维持较高帧率。
+`FACE_TRACKER_BACKEND=detector` 可以切回 MediaPipe 的 BlazeFace Short Range Face Detector：它返回人脸框和六个关键点，本项目只取左右眼关键点来计算眼睛中心和眼间距。
+
+这里没有把 MediaPipe Face Landmarker 当作必需品。展示箱不需要 478 个面部关键点、表情系数或身份特征，双眼位置已经足够，而且在同一台机器上更容易维持较高帧率；需要时可显式选择 `landmarker`。
 
 服务固定选择一张主要人脸。检测不到人脸时会发送 `tracking: false`，前端稍后把视角平滑复位。摄像头短暂断流时，服务会释放设备并自动重连。
 
@@ -118,7 +120,7 @@ macOS 第一次启动摄像头时，需要允许终端或 Codex 使用摄像头�
 uv sync --extra dev
 ```
 
-首次运行会从 MediaPipe 官方地址下载约 225 KB 的 BlazeFace 模型，保存在 `models/blaze_face_short_range.tflite`。
+首次运行会下载检测模型到 `models/`：默认的 YuNet 检测器约 230 KB（opencv_zoo 官方源）。选择 `detector` 或 `landmarker` 后端时，会改为从 MediaPipe 官方地址下载对应的 BlazeFace / Face Landmarker 模型。
 
 ### 1. 启动人脸位置服务
 
@@ -229,7 +231,7 @@ WebSocket 只在产生新结果时发送数据，`sequence` 可用于判断是�
 
 | 变量 | 默认值 | 说明 |
 |---|---:|---|
-| `FACE_TRACKER_BACKEND` | `detector` | 检测后端:`detector`(BlazeFace)/ `landmarker`(face_landmarker 68 点)/ `yunet`(OpenCV YuNet + Facemark LBF) |
+| `FACE_TRACKER_BACKEND` | `yunet` | 检测后端:`yunet`(OpenCV YuNet + Facemark LBF,默认)/ `detector`(BlazeFace)/ `landmarker`(face_landmarker 68 点) |
 | `FACE_CAMERA_SOURCE` | `0` | 摄像头编号,也可以是视频文件绝对路径 |
 | `FACE_CAMERA_WIDTH` | `1280` | 请求的摄像头宽度 |
 | `FACE_CAMERA_HEIGHT` | `720` | 请求的摄像头高度 |
@@ -269,10 +271,11 @@ FACE_CAMERA_SOURCE=/absolute/path/to/video.mp4 uv run face-tracker serve
 
 ### 使用 OpenCV YuNet + Facemark 后端
 
-本地 CPU 运行、依赖更少的替代检测链路。首次使用会从 opencv_zoo 官方源下载 YuNet 检测器（约 230 KB）到 `models/`；Facemark LBF（约 54 MB）是可选升级，缺省时自动降级为 YuNet 自带的关键点。
+本地 CPU 运行、依赖更少的检测链路，也是默认后端。首次使用会从 opencv_zoo 官方源下载 YuNet 检测器（约 230 KB）到 `models/`；Facemark LBF（约 54 MB）是可选升级，缺省时自动降级为 YuNet 自带的关键点。
 
 ```bash
-FACE_TRACKER_BACKEND=yunet uv run face-tracker serve
+uv run face-tracker serve                                  # 默认就是 yunet
+FACE_TRACKER_BACKEND=detector uv run face-tracker serve    # 切回 BlazeFace
 ```
 
 `model` 字段会标记为 `opencv-yunet`。眼睛点优先来自 Facemark LBF 的 68 点模型（`eyes.source = facemark-lbf`）；若 LBF 模型缺失或加载失败，则退回 YuNet 检测器自带的眼睛关键点（`eyes.source = yunet-keypoints`）。两种来源都基于同一套眼中心/眼距几何计算输出 `viewer_position_m`。

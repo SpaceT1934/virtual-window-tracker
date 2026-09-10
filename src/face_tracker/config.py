@@ -28,7 +28,7 @@ def _env_float(name: str, default: float) -> float:
 
 @dataclass(frozen=True, slots=True)
 class Settings:
-    tracker_backend: str = "detector"
+    tracker_backend: str = "yunet"
     landmark_model_path: Path = Path("models/face_landmarker.task")
     yunet_model_path: Path = Path("models/face_detection_yunet_2023mar.onnx")
     lbf_model_path: Path = Path("models/lbfmodel.yaml")
@@ -51,7 +51,7 @@ class Settings:
     @classmethod
     def from_env(cls) -> "Settings":
         return cls(
-            tracker_backend=os.getenv("FACE_TRACKER_BACKEND", "detector"),
+            tracker_backend=os.getenv("FACE_TRACKER_BACKEND", "yunet"),
             landmark_model_path=Path(
                 os.getenv("FACE_LANDMARK_MODEL_PATH", "models/face_landmarker.task")
             ),

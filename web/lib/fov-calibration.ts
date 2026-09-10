@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useSyncExternalStore } from 'react';
 
 import type { Position } from './window-tracking';
 
@@ -50,9 +50,7 @@ export function applyDepthScale(position: Position, scale: number): Position {
 
 /* ---------------------------------------------------------------- storage */
 
-let trueFovDeg: number | null = null;
-let hydrated = false;
-const listeners = new Set<(value: number | null) => void>();
+const listeners = new Set<() => void>();
 
 function read(): number | null {
   if (typeof window === 'undefined') return null;
@@ -76,37 +74,37 @@ function write(value: number | null) {
   }
 }
 
+// Resolved once at module scope: reading storage lazily from a render would
+// make the snapshot getter impure, and on the server there is nothing to read.
+let trueFovDeg: number | null = read();
+
 /** null means "follow the backend FOV", i.e. no correction. */
 export function getTrueFovDeg(): number | null {
-  if (!hydrated) {
-    hydrated = true;
-    trueFovDeg = read();
-  }
   return trueFovDeg;
 }
 
 export function setTrueFovDeg(value: number | null) {
   const next = value === null ? null : clampFov(value);
   if (next === trueFovDeg) return;
-  hydrated = true;
   trueFovDeg = next;
   write(next);
-  listeners.forEach((listener) => listener(next));
+  listeners.forEach((listener) => listener());
 }
 
-export function subscribeTrueFov(listener: (value: number | null) => void) {
+export function subscribeTrueFov(listener: () => void) {
   listeners.add(listener);
   return () => {
     listeners.delete(listener);
   };
 }
 
-/** React binding. Hydrates after mount so server output never disagrees. */
+/**
+ * React binding. `useSyncExternalStore` keeps every consumer (the settings
+ * panel and the debug page are separate trees) in step without an effect that
+ * writes state, and the server snapshot stays null so hydration cannot
+ * disagree with the markup.
+ */
 export function useTrueFovDeg(): [number | null, (value: number | null) => void] {
-  const [value, setValue] = useState<number | null>(null);
-  useEffect(() => {
-    setValue(getTrueFovDeg());
-    return subscribeTrueFov(setValue);
-  }, []);
+  const value = useSyncExternalStore(subscribeTrueFov, getTrueFovDeg, () => null);
   return [value, setTrueFovDeg];
 }
