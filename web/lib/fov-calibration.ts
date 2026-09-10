@@ -103,6 +103,10 @@ export function subscribeTrueFov(listener: (value: number | null) => void) {
 
 /** React binding. Hydrates after mount so server output never disagrees. */
 export function useTrueFovDeg(): [number | null, (value: number | null) => void] {
-  const value = useSyncExternalStore(subscribeTrueFov, getTrueFovDeg, () => null);
+  const value = useSyncExternalStore(
+    (onStoreChange) => subscribeTrueFov(() => onStoreChange()),
+    getTrueFovDeg,
+    () => null,
+  );
   return [value, setTrueFovDeg];
 }
