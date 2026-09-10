@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useSyncExternalStore } from 'react';
 
 import type { Position } from './window-tracking';
 
@@ -103,10 +103,6 @@ export function subscribeTrueFov(listener: (value: number | null) => void) {
 
 /** React binding. Hydrates after mount so server output never disagrees. */
 export function useTrueFovDeg(): [number | null, (value: number | null) => void] {
-  const [value, setValue] = useState<number | null>(null);
-  useEffect(() => {
-    setValue(getTrueFovDeg());
-    return subscribeTrueFov(setValue);
-  }, []);
+  const value = useSyncExternalStore(subscribeTrueFov, getTrueFovDeg, () => null);
   return [value, setTrueFovDeg];
 }
