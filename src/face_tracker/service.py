@@ -29,6 +29,10 @@ class TrackingService:
             "camera_source": settings.camera_source,
             "tracker_backend": settings.tracker_backend,
             "capture_mode": "latest-frame",
+            # Geometry the reported positions were derived from, so a client can
+            # reinterpret them without guessing what the process was started with.
+            "camera_hfov_deg": settings.camera_hfov_deg,
+            "assumed_ipd_m": settings.assumed_ipd_m,
         }
 
     def start(self) -> None:
@@ -110,6 +114,8 @@ class TrackingService:
                         "type": "face_tracking",
                         "sequence": sequence,
                         "tracker_backend": self.settings.tracker_backend,
+                        "camera_hfov_deg": self.settings.camera_hfov_deg,
+                        "assumed_ipd_m": self.settings.assumed_ipd_m,
                         "captured_at_unix_ms": sample.unix_ms,
                         "published_at_unix_ms": int(time.time() * 1000),
                         "processing_ms": round((finished - started) * 1000, 2),

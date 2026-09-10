@@ -58,7 +58,17 @@ export class TrackingSession {
     this.resetCalibration();
   }
 
-  accept(packet: unknown, now: number): Position | null {
+  /**
+   * Feed one tracking packet.
+   *
+   * ``depthScale`` rescales the reported depth before it is validated and
+   * calibrated, which is how a client compensates for a camera whose real FOV
+   * differs from the tracker's configured one (see lib/fov-calibration).  It
+   * must be applied here rather than in the projection maths: the neutral
+   * calibration records a depth, and the scale that x/y are multiplied by is
+   * derived from it, so correcting it late leaves the same error in place.
+   */
+  accept(packet: unknown, now: number, depthScale = 1): Position | null {
     if (!packet || typeof packet !== 'object') return null;
     const data = packet as {
       sequence?: number; tracking?: boolean; track_id?: number;
@@ -69,13 +79,22 @@ export class TrackingSession {
       if (!Number.isSafeInteger(data.sequence) || data.sequence <= this.sequence) return null;
       this.sequence = data.sequence;
     }
-    const p = data.face?.viewer_position_m?.filtered;
-    if (data.tracking !== true || !isPosition(p)) {
+    const raw = data.face?.viewer_position_m?.filtered;
+    // Only depth carries the configured-FOV error: x and y reduce to
+    // (u - cx) * assumed_ipd / eye_pixels, which is independent of fx.  Doing
+    // the arithmetic inline keeps this module free of runtime imports so the
+    // test runner can load it directly.
+    const corrected =
+      isPosition(raw) && depthScale !== 1
+        ? { x: raw.x, y: raw.y, z: raw.z * depthScale }
+        : raw;
+    if (data.tracking !== true || !isPosition(corrected)) {
       this.stationary = false;
       this.reprojectionError = null;
       if (!this.neutral) this.samples = [];
       return null;
     }
+    const position = corrected;
     if (data.track_id !== undefined && data.track_id !== this.identity) {
       if (!Number.isSafeInteger(data.track_id) || data.track_id < 0) return null;
       this.resetCalibration();
@@ -90,7 +109,7 @@ export class TrackingSession {
     this.stationary = data.face?.quality?.stationary === true;
     if (!this.neutral) {
       if (data.calibration_ready === false) { this.samples = []; return null; }
-      this.samples.push({ position: { ...p }, time: now });
+      this.samples.push({ position: { ...position }, time: now });
       this.samples = this.samples.filter((s) => now - s.time <= 1200).slice(-15);
       if (this.samples.length < 10 || now - this.samples[0].time < 250) return null;
       const median = (key: keyof Position) => {
@@ -103,7 +122,7 @@ export class TrackingSession {
       this.neutral = center;
       this.samples = [];
     }
-    return p;
+    return position;
   }
 
   stale(now: number, resetMs: number) {

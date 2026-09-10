@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { PerspectiveCamera, Vector3, Matrix4, Euler } from 'three';
 import { applyWindowProjection } from '../lib/window-projection.ts';
 import { TrackingSession, physicalView, MAX_TRACKING_DEPTH_M } from '../lib/window-tracking.ts';
+import { depthScaleFor } from '../lib/fov-calibration.ts';
 import { windowPlaneFromAnchor } from '../lib/window-anchor.ts';
 import { RenderBudget, renderPixelRatio } from '../lib/render-budget.ts';
 
@@ -126,6 +127,19 @@ test('far positions are tracked instead of being discarded as "no face"', () => 
   assert.equal(s.stale(600, 700).lost, false);
   assert.deepEqual(s.accept(packet(41, { x: 0, y: 0, z: MAX_TRACKING_DEPTH_M }), 534), { x: 0, y: 0, z: MAX_TRACKING_DEPTH_M });
   assert.equal(s.accept(packet(42, { x: 0, y: 0, z: 0.01 }), 568), null);
+});
+test('depth scale compensates for a misconfigured FOV before calibration', () => {
+  const scale = depthScaleFor(70, 110);
+  const s = new TrackingSession();
+  let last = null;
+  for (let i = 0; i < 12; i++) last = s.accept(packet(i, { x: 0, y: 0, z: 1.2 }), i * 34, scale);
+  // 1.2 m reported by a 70 deg tracker is ~0.59 m for a 110 deg lens.
+  assert.ok(Math.abs(last.z - 1.2 * scale) < 1e-9);
+  assert.ok(Math.abs(s.neutral.z - 1.2 * scale) < 1e-9, 'calibration must use corrected depth');
+});
+test('a depth correction that pushes a sample out of range is still rejected', () => {
+  const s = calibrated();
+  assert.equal(s.accept(packet(40, { x: 0, y: 0, z: 5 }), 500, 4), null);
 });
 test('new identity and reconnection require a new calibration', () => {
   const s = calibrated();
